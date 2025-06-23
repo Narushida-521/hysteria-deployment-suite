@@ -47,7 +47,7 @@
 
 请使用SSH登录到您的服务器，然后复制并执行以下单行命令：
 
-bash \<(curl \-fsSL https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/install.sh)
+bash \<(curl \-fsSL [https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/install.sh](https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/refs/heads/main/script/install.sh))
 
 **提示:** 请将上面的URL替换成您自己存放install.sh脚本的GitHub Raw地址。
 
