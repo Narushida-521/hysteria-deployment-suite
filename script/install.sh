@@ -114,3 +114,68 @@ main() {
     
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
+server:
+  listen: :$LISTEN_PORT
+  tls:
+    cert: $CERT_PATH
+    key: $KEY_PATH
+auth:
+  type: password
+  password: $OBFS_PASSWORD
+EOF
+    print_message "$GREEN" "配置完成。端口: $LISTEN_PORT, 密码: $OBFS_PASSWORD"
+
+    # 6. 设置 Systemd 服务
+    print_message "$YELLOW" "正在设置 Systemd 服务..."
+    cat > "$SERVICE_PATH" <<EOF
+[Unit]
+Description=Hysteria 2 Service
+After=network.target
+[Service]
+Type=simple
+ExecStart=$HYSTERIA_BIN server --config $CONFIG_PATH
+WorkingDirectory=/etc/hysteria
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable hysteria
+    print_message "$GREEN" "Systemd 服务设置完毕。"
+
+    # 7. 配置防火墙
+    print_message "$YELLOW" "正在配置防火墙..."
+    if command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp
+        firewall-cmd --reload
+    elif command -v ufw &>/dev/null; then
+        ufw allow ${LISTEN_PORT}/udp >/dev/null
+    else
+        print_message "$YELLOW" "未检测到 firewalld 或 ufw。"
+    fi
+    print_message "$GREEN" "防火墙配置完毕。"
+
+    # 8. 启动并进行最终诊断
+    print_message "$YELLOW" "正在启动 Hysteria 2 服务..."
+    systemctl restart hysteria
+    sleep 3 # 等待3秒让服务有时间启动或失败
+    
+    print_message "$GREEN" "脚本执行完毕。下面是最终的诊断信息。"
+    
+    # 自动诊断
+    print_message "$YELLOW" "诊断 1: 检查服务状态 (systemctl status)"
+    systemctl status hysteria --no-pager || true # 使用 || true 确保即使服务失败也不会让脚本退出
+    
+    print_message "$YELLOW" "诊断 2: 检查服务日志 (journalctl)"
+    journalctl -u hysteria -n 20 --no-pager || true
+    
+    print_message "$YELLOW" "诊断 3: 检查端口监听 (ss)"
+    ss -ulpn | grep ":$LISTEN_PORT" || print_message "$RED" "未发现程序在监听端口 $LISTEN_PORT"
+    
+    print_message "$GREEN" "所有诊断步骤已完成。"
+}
+
+# --- 运行主函数 ---
+main
