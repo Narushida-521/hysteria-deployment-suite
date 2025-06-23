@@ -1,15 +1,14 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v3 - Final Fix)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v4 - Final Fix)
 #
 # 更新日志:
-# - 修复了下载逻辑，确保精确下载 Hysteria v2 版本，避免错下 v1。
-# - 增加了 'set -e'，任何命令出错时脚本将立即停止，防止错误继续执行。
+# - 修正了版本检查命令，从 `hysteria --version` 改为 `hysteria version`
+#   以兼容最新版的 Hysteria 2。
 # ==============================================================================
 
 # --- 脚本设置 ---
-# 如果任何命令失败，则立即退出
 set -e
 
 # --- 颜色定义 ---
@@ -64,7 +63,7 @@ get_server_ip() {
     fi
 }
 
-# --- V3 更新：修复下载逻辑 ---
+# --- V4 更新：修正版本检查命令 ---
 install_hysteria() {
     print_message "$YELLOW" "正在查找并安装 Hysteria 2 最新版本..."
     ARCH=$(uname -m)
@@ -75,14 +74,11 @@ install_hysteria() {
             print_message "$RED" "不支持的架构: $ARCH"; exit 1 ;;
     esac
 
-    # 精确查找最新的 Hysteria 2 版本
     LATEST_V2_TAG=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases" | \
         jq -r '[.[] | select(.tag_name | startswith("app/v2."))] | .[0].tag_name')
 
     if [ -z "$LATEST_V2_TAG" ] || [ "$LATEST_V2_TAG" == "null" ]; then
-        print_message "$RED" "无法找到最新的 Hysteria 2 版本号。"
-        print_message "$YELLOW" "这可能是 GitHub API 访问问题。请稍后重试。"
-        exit 1
+        print_message "$RED" "无法找到最新的 Hysteria 2 版本号。"; exit 1
     fi
 
     print_message "$GREEN" "找到最新的 Hysteria 2 版本: $LATEST_V2_TAG"
@@ -92,14 +88,14 @@ install_hysteria() {
     curl -L -o "$HYSTERIA_BIN" "$DOWNLOAD_URL"
     chmod +x "$HYSTERIA_BIN"
     
-    # 验证下载的二进制文件
-    HYSTERIA_VERSION=$($HYSTERIA_BIN --version)
+    # 使用正确的 `version` 命令进行验证
+    HYSTERIA_VERSION=$($HYSTERIA_BIN version)
     if [[ ! "$HYSTERIA_VERSION" == *"Hysteria 2"* ]]; then
         print_message "$RED" "下载的二进制文件不是 Hysteria 2！安装失败。"
         exit 1
     fi
     
-    print_message "$GREEN" "Hysteria 2 安装成功！版本：$($HYSTERIA_BIN --version | head -n 1)"
+    print_message "$GREEN" "Hysteria 2 安装成功！版本：$($HYSTERIA_BIN version | head -n 1)"
 }
 
 is_port_in_use() {
