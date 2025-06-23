@@ -1,0 +1,17 @@
+listen: :443
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+auth:
+  type: password
+  password: "20250623"
+congestion_control:
+  type: bbr
+bandwidth:
+  up: 100 mbps
+  down: 500 mbps
+masquerade:
+  type: proxy
+  proxy:
+    url: https://bing.com
+    rewriteHost: true

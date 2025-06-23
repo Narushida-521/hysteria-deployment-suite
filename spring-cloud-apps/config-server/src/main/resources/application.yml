@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: config-server
+  cloud:
+    config:
+      server:
+        git:
+          uri: git@github.com:Narushida-521/hysteria-config.git
+          strict-host-key-checking: false
+          private-key: |
+            -----BEGIN OPENSSH PRIVATE KEY-----
+            b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+            QyNTUxOQAAACAnQSSpk9ZyITqf/7rR14iGu+DzsITCUm1xnRObdbOBcAAAAJALxmvxC8Zr
+            8QAAAAtzc2gtZWQyNTUxOQAAACAnQSSpk9ZyITqf/7rR14iGu+DzsITCUm1xnRObdbOBcA
+            AAAEAIB/3+HK8OYS0YlROflDcxkwvO2U2w9sK0B/JwqBGkMidBJKmT1nIhOp//utHXiIa7
+            4POwhMJSbXGdE5t1s4FwAAAACW15VlBTLWtleQECAwQ=
+            -----END OPENSSH PRIVATE KEY-----
+server:
+  port: 8888
