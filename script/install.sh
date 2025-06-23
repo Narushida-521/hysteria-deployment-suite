@@ -1,7 +1,9 @@
 #!/bin/bash
 # Hysteria 2 All-in-One Installation Script
 #
-# v2.1: 增加了交互式端口选择功能，解决特权端口绑定失败问题。
+# v2.3: 新增自动生成标准hy2://订阅链接的功能。
+# v2.2: 增加对旧服务的预先停止逻辑。
+# v2.1: 增加了交互式端口选择功能。
 # v2.0: 重构下载逻辑，直接下载二进制文件。
 
 set -e
@@ -22,39 +24,48 @@ check_root() { if [ "$(id -u)" -ne 0 ]; then echo -e "${RED}错误: 此脚本必
 get_arch() { ARCH=$(uname -m); case $ARCH in x86_64|amd64) ARCH="amd64";; aarch64|arm64) ARCH="arm64";; *) echo -e "${RED}错误: 不支持的系统架构: $ARCH${NC}"; exit 1;; esac; echo "检测到系统架构: $ARCH"; }
 install_dependencies() { echo -e "${GREEN}--- 步骤 1/7: 正在检查并安装依赖...${NC}"; if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y curl tar openssl; elif command -v yum >/dev/null 2>&1; then yum install -y curl tar openssl; else echo -e "${RED}错误: 无法确定包管理器。${NC}"; exit 1; fi; }
 
+# 【【【 新增函数 Start 】】】
+# URL编码函数，用于处理密码中的特殊字符
+url_encode() {
+    local string="${1}"
+    local strlen=${#string}
+    local encoded=""
+    local pos c o
+
+    for (( pos=0 ; pos<strlen ; pos++ )); do
+        c=${string:$pos:1}
+        case "$c" in
+            [-_.~a-zA-Z0-9] ) o="${c}" ;;
+            * )               printf -v o '%%%02x' "'$c"
+        esac
+        encoded+="${o}"
+    done
+    echo "${encoded}"
+}
+# 【【【 新增函数 End 】】】
+
+
 # 设置并安装Hysteria 2的核心逻辑
 setup_hysteria() {
-    # 【【【 核心修正 Start 】】】
-    echo -e "${GREEN}--- 端口配置 ---${NC}"
-    # 提示用户输入端口，并提供默认值和建议
-    read -rp "请输入您希望使用的端口 (推荐使用443, 若失败请选择1024-65535范围内的端口) [默认: 443]: " USER_PORT
-    # 如果用户输入为空，则使用默认值443
-    USER_PORT=${USER_PORT:-443}
+    echo -e "${GREEN}--- 正在停止任何可能在运行的旧Hysteria服务... ---${NC}"
+    systemctl stop hysteria.service >/dev/null 2>&1 || true
+    pkill -f "hysteria server" >/dev/null 2>&1 || true
+    sleep 1; echo "旧服务已停止。"
 
-    # 简单的输入验证
+    echo -e "${GREEN}--- 端口配置 ---${NC}"
+    read -rp "请输入您希望使用的端口 (推荐443, 若失败请选1024-65535) [默认: 443]: " USER_PORT
+    USER_PORT=${USER_PORT:-443}
     if ! [[ "$USER_PORT" =~ ^[0-9]+$ ]] || [ "$USER_PORT" -lt 1 ] || [ "$USER_PORT" -gt 65535 ]; then
-        echo -e "${RED}错误: 无效的端口号。请输入1-65535之间的数字。${NC}"
-        exit 1
+        echo -e "${RED}错误: 无效的端口号。${NC}"; exit 1
     fi
     echo "将使用端口: ${USER_PORT}"
-    # 【【【 核心修正 End 】】】
 
+    echo -e "${GREEN}--- 步骤 2/7: 正在下载并安装 Hysteria 2... ---${NC}"
+    mkdir -p $INSTALL_DIR; URL_ENCODED_VERSION_TAG="${HY2_VERSION_TAG//\//%2F}"; ASSET_NAME="hysteria-linux-${ARCH}"; DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/${URL_ENCODED_VERSION_TAG}/${ASSET_NAME}"; echo "正在从 $DOWNLOAD_URL 下载..."; curl -Lf -o "${INSTALL_DIR}/hysteria" "$DOWNLOAD_URL"; echo "下载完成。"; chmod +x "${INSTALL_DIR}/hysteria"; echo "安装成功。"
 
-    echo -e "${GREEN}--- 步骤 2/7: 正在下载并安装 Hysteria 2 (版本: ${HY2_VERSION_TAG}) ---${NC}"
-    mkdir -p $INSTALL_DIR
-    URL_ENCODED_VERSION_TAG="${HY2_VERSION_TAG//\//%2F}"
-    ASSET_NAME="hysteria-linux-${ARCH}"
-    DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/${URL_ENCODED_VERSION_TAG}/${ASSET_NAME}"
-    echo "正在从 $DOWNLOAD_URL 下载..."; curl -Lf -o "${INSTALL_DIR}/hysteria" "$DOWNLOAD_URL"; echo "下载完成。"
-    chmod +x "${INSTALL_DIR}/hysteria"
-    echo "安装成功。"
+    echo -e "${GREEN}--- 步骤 3/7: 正在生成自签名证书... ---${NC}"; openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "${INSTALL_DIR}/server.key" -out "${INSTALL_DIR}/server.crt" -subj "/CN=bing.com" -days 3650
 
-    echo -e "${GREEN}--- 步骤 3/7: 正在生成自签名证书 ---${NC}"; openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "${INSTALL_DIR}/server.key" -out "${INSTALL_DIR}/server.crt" -subj "/CN=bing.com" -days 3650
-
-    echo -e "${GREEN}--- 步骤 4/7: 正在生成配置文件 ---${NC}"; read -rp "请输入您的连接密码 (留空将随机生成): " USER_PASSWORD; [ -z "${USER_PASSWORD}" ] && USER_PASSWORD=$(openssl rand -base64 16); 
-    
-    # 【【【 核心修正 】】】
-    # 在生成配置文件时，使用用户选择的端口变量 $USER_PORT
+    echo -e "${GREEN}--- 步骤 4/7: 正在生成配置文件... ---${NC}"; read -rp "请输入您的连接密码 (留空将随机生成): " USER_PASSWORD; [ -z "${USER_PASSWORD}" ] && USER_PASSWORD=$(openssl rand -base64 16);
     cat > "${INSTALL_DIR}/config.yaml" <<EOF
 listen: :${USER_PORT}
 tls:
@@ -75,7 +86,7 @@ masquerade:
     rewriteHost: true
 EOF
 
-    echo -e "${GREEN}--- 步骤 5/7: 正在设置Systemd服务 ---${NC}"; cat > /etc/systemd/system/hysteria.service <<EOF
+    echo -e "${GREEN}--- 步骤 5/7: 正在设置Systemd服务... ---${NC}"; cat > /etc/systemd/system/hysteria.service <<EOF
 [Unit]
 Description=Hysteria 2 Service (managed by script)
 After=network.target
@@ -90,15 +101,17 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
     echo "正在重载、启用并启动服务..."; systemctl daemon-reload; systemctl enable hysteria.service; systemctl restart hysteria.service
-    
-    # 【【【 核心修正 】】】
-    # 在配置防火墙时，也使用用户选择的端口变量 $USER_PORT
-    echo -e "${GREEN}--- 步骤 6/7: 正在配置防火墙 ---${NC}"; if command -v ufw >/dev/null 2>&1; then ufw allow ${USER_PORT}/udp >/dev/null 2>&1 || true; fi; if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --add-port=${USER_PORT}/udp --permanent >/dev/null 2>&1 || true && firewall-cmd --reload >/dev/null 2>&1 || true; fi
-    
+
+    echo -e "${GREEN}--- 步骤 6/7: 正在配置防火墙... ---${NC}"; if command -v ufw >/dev/null 2>&1; then ufw allow ${USER_PORT}/udp >/dev/null 2>&1 || true; fi; if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --add-port=${USER_PORT}/udp --permanent >/dev/null 2>&1 || true && firewall-cmd --reload >/dev/null 2>&1 || true; fi
+
     echo -e "${GREEN}--- 步骤 7/7: 生成最终连接信息 ---${NC}"; PUBLIC_IP=$(curl -s http://ipv4.icanhazip.com); clear
     
-    # 【【【 核心修正 】】】
-    # 在最终输出时，同样使用用户选择的端口变量 $USER_PORT
+    # 【【【 核心修正 Start 】】】
+    ENCODED_PASSWORD=$(url_encode "${USER_PASSWORD}")
+    NODE_NAME="Hysteria-Node-$(date +%s)"
+    HY2_URI="hy2://${ENCODED_PASSWORD}@${PUBLIC_IP}:${USER_PORT}/?insecure=1&sni=bing.com#${NODE_NAME}"
+    # 【【【 核心修正 End 】】】
+
     echo -e "========================================================================"
     echo -e "${GREEN}✅ Hysteria 2 安装并启动成功！${NC}"
     echo -e "------------------------------------------------------------------------"
@@ -108,6 +121,9 @@ EOF
     echo -e "   ${YELLOW}密码 (Auth):         ${USER_PASSWORD}${NC}"
     echo -e "   ${YELLOW}服务器名称/SNI:       bing.com${NC}"
     echo -e "   ${YELLOW}跳过证书验证 (insecure): true${NC}"
+    echo -e "------------------------------------------------------------------------"
+    echo -e "   ${GREEN}>>> 单行订阅链接 (可直接复制导入) <<<${NC}"
+    echo -e "   ${YELLOW}${HY2_URI}${NC}"
     echo -e "------------------------------------------------------------------------"
     echo -e "提示: 您可以使用 'systemctl status hysteria' 命令查看服务状态。"
     echo -e "========================================================================"
