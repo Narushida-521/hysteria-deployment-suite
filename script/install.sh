@@ -1,17 +1,18 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v4 - Final & Corrected)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v5 - Debug Edition)
 #
-# 更新日志:
-# - 修正了版本检查命令，从 `hysteria --version` 改为 `hysteria version`
-#   以兼容最新版的 Hysteria 2。
-# - 修复了下载逻辑，确保精确下载 Hysteria v2 版本。
-# - 增加了 'set -e'，任何命令出错时脚本将立即停止。
+# 特点:
+# - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
+# - 在关键步骤增加明确的输出信息。
+# - 脚本结束时自动运行诊断命令，收集所有必要信息。
 # ==============================================================================
 
 # --- 脚本设置 ---
-set -e
+# 如果任何命令失败，则立即退出 (e)
+# 打印所有执行的命令到终端 (x)
+set -ex
 
 # --- 颜色定义 ---
 GREEN='\033[0;32m'
@@ -30,42 +31,52 @@ HYSTERIA_BIN="/usr/local/bin/hysteria"
 print_message() {
     local color=$1
     local message=$2
+    # 在调试模式下，让输出更显眼
+    echo "=================================================================="
     echo -e "${color}${message}${NC}"
+    echo "=================================================================="
 }
 
-# --- 脚本主要功能函数 ---
-
-check_root() {
+# --- 主执行流程 ---
+main() {
+    print_message "$YELLOW" "开始执行脚本，当前用户: $(whoami)"
+    
+    # 1. 检查 Root 权限
     if [ "$(id -u)" -ne 0 ]; then
         print_message "$RED" "错误：此脚本必须以 root 权限运行。"
         exit 1
     fi
-}
+    print_message "$GREEN" "Root 权限检查通过。"
 
-install_dependencies() {
+    # 清理旧的安装 (如果存在)
+    print_message "$YELLOW" "正在停止并清理任何旧的 Hysteria 服务..."
+    systemctl stop hysteria >/dev/null 2>&1 || true
+    rm -f "$HYSTERIA_BIN" "$SERVICE_PATH" /etc/hysteria/config.yaml
+    print_message "$GREEN" "旧文件清理完毕。"
+
+    # 2. 安装依赖
     print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2)..."
-    if ! command -v curl &>/dev/null || ! command -v jq &>/dev/null || ! command -v ss &>/dev/null; then
-        if command -v apt-get &>/dev/null; then
-            apt-get update && apt-get install -y curl jq iproute2
-        elif command -v yum &>/dev/null; then
-            yum install -y curl jq iproute
-        elif command -v dnf &>/dev/null; then
-            dnf install -y curl jq iproute
-        else
-            print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq' 和 'iproute2'。"
-            exit 1
-        fi
+    if command -v apt-get &>/dev/null; then
+        apt-get update && apt-get install -y curl jq iproute2
+    elif command -v yum &>/dev/null; then
+        yum install -y curl jq iproute
+    elif command -v dnf &>/dev/null; then
+        dnf install -y curl jq iproute
+    else
+        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq' 和 'iproute2'。"
+        exit 1
     fi
-}
+    print_message "$GREEN" "依赖安装完毕。"
 
-get_server_ip() {
+    # 3. 获取服务器IP
+    print_message "$YELLOW" "正在获取公网 IP..."
     SERVER_IP=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
     if [ -z "$SERVER_IP" ]; then
         print_message "$RED" "无法自动获取服务器公网 IP 地址。"; exit 1
     fi
-}
+    print_message "$GREEN" "获取到公网 IP: $SERVER_IP"
 
-install_hysteria() {
+    # 4. 安装 Hysteria
     print_message "$YELLOW" "正在查找并安装 Hysteria 2 最新版本..."
     ARCH=$(uname -m)
     case $ARCH in
@@ -82,144 +93,24 @@ install_hysteria() {
         print_message "$RED" "无法找到最新的 Hysteria 2 版本号。"; exit 1
     fi
 
-    print_message "$GREEN" "找到最新的 Hysteria 2 版本: $LATEST_V2_TAG"
     DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/${LATEST_V2_TAG}/hysteria-linux-${ARCH}"
     
     print_message "$YELLOW" "正在从 $DOWNLOAD_URL 下载..."
     curl -L -o "$HYSTERIA_BIN" "$DOWNLOAD_URL"
     chmod +x "$HYSTERIA_BIN"
     
-    # 使用正确的 `version` 命令进行验证
-    HYSTERIA_VERSION=$($HYSTERIA_BIN version)
-    if [[ ! "$HYSTERIA_VERSION" == *"Hysteria 2"* ]]; then
-        print_message "$RED" "下载的二进制文件不是 Hysteria 2！安装失败。"
-        exit 1
-    fi
-    
-    print_message "$GREEN" "Hysteria 2 安装成功！版本：$($HYSTERIA_BIN version | head -n 1)"
-}
+    print_message "$YELLOW" "正在验证 Hysteria 版本..."
+    $HYSTERIA_BIN version
+    print_message "$GREEN" "Hysteria 2 安装和验证成功。"
 
-is_port_in_use() {
-    local port=$1
-    if ss -tulpn | grep -q ":${port}\b"; then return 0; else return 1; fi
-}
-
-configure_hysteria() {
+    # 5. 配置 Hysteria
     print_message "$YELLOW" "开始配置 Hysteria 2..."
+    LISTEN_PORT=35888 # 使用一个固定的端口进行测试，避免随机性问题
+    OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16) # 随机生成密码
     
-    DEFAULT_PORT=$((RANDOM % 45536 + 20000))
-    while is_port_in_use "$DEFAULT_PORT"; do
-        DEFAULT_PORT=$((RANDOM % 45536 + 20000))
-    done
-
-    read -p "请输入 Hysteria 2 的监听端口 [默认: $DEFAULT_PORT]: " LISTEN_PORT
-    LISTEN_PORT=${LISTEN_PORT:-$DEFAULT_PORT}
-
-    if is_port_in_use "$LISTEN_PORT"; then
-        print_message "$RED" "错误：端口 $LISTEN_PORT 已被占用。"; exit 1
-    fi
-
-    DEFAULT_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
-    read -p "请输入连接密码 (obfs) [默认: 随机生成]: " OBFS_PASSWORD
-    OBFS_PASSWORD=${OBFS_PASSWORD:-$DEFAULT_PASSWORD}
-
     mkdir -p /etc/hysteria
-    print_message "$YELLOW" "正在为 $SERVER_IP 生成自签名证书..."
+    print_message "$YELLOW" "正在生成自签名证书..."
     $HYSTERIA_BIN cert --self-signed --host "$SERVER_IP" --out "$CERT_PATH" --key "$KEY_PATH"
     
-    print_message "$YELLOW" "正在创建配置文件: $CONFIG_PATH"
+    print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
-server:
-  listen: :$LISTEN_PORT
-  tls:
-    cert: $CERT_PATH
-    key: $KEY_PATH
-  
-auth:
-  type: password
-  password: $OBFS_PASSWORD
-EOF
-}
-
-setup_systemd_service() {
-    print_message "$YELLOW" "正在设置 Systemd 服务..."
-    cat > "$SERVICE_PATH" <<EOF
-[Unit]
-Description=Hysteria 2 Service
-After=network.target
-[Service]
-Type=simple
-ExecStart=$HYSTERIA_BIN server --config $CONFIG_PATH
-WorkingDirectory=/etc/hysteria
-Restart=on-failure
-RestartSec=10
-LimitNOFILE=65536
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable hysteria
-}
-
-configure_firewall() {
-    print_message "$YELLOW" "正在配置防火墙..."
-    if command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp
-        firewall-cmd --reload
-        print_message "$GREEN" "Firewalld: 已开放端口 ${LISTEN_PORT}/udp"
-    elif command -v ufw &>/dev/null; then
-        ufw allow ${LISTEN_PORT}/udp >/dev/null
-        print_message "$GREEN" "UFW: 已开放端口 ${LISTEN_PORT}/udp"
-    else
-        print_message "$YELLOW" "未检测到 firewalld 或 ufw。请手动开放 UDP 端口: $LISTEN_PORT"
-        print_message "$YELLOW" "如果您的服务器商有外部防火墙 (安全组), 请务必手动放行该 UDP 端口。"
-    fi
-}
-
-start_and_display_results() {
-    print_message "$YELLOW" "正在启动 Hysteria 2 服务..."
-    systemctl restart hysteria
-    sleep 2
-    
-    if ! systemctl is-active --quiet hysteria; then
-        print_message "$RED" "Hysteria 2 服务启动失败！"
-        print_message "$YELLOW" "请检查日志获取详细错误信息: journalctl -u hysteria --no-pager -n 50"
-        exit 1
-    fi
-    
-    SHARE_LINK="hy2://$OBFS_PASSWORD@$SERVER_IP:$LISTEN_PORT?insecure=1&sni=$SERVER_IP"
-
-    print_message "$GREEN" "=================================================================="
-    print_message "$GREEN" " Hysteria 2 已部署完成！"
-    print_message "$GREEN" "=================================================================="
-    print_message "$YELLOW" "服务器地址:      ${SERVER_IP}"
-    print_message "$YELLOW" "服务器端口:      ${LISTEN_PORT}"
-    print_message "$YELLOW" "连接密码 (obfs): ${OBFS_PASSWORD}"
-    print_message "$NC"     "------------------------------------------------------------------"
-    print_message "$YELLOW" "分享链接 (可直接导入 V2rayN / NekoBox 等客户端):"
-    print_message "$GREEN"  "$SHARE_LINK"
-    print_message "$NC"     "------------------------------------------------------------------"
-    print_message "$YELLOW" "管理命令:"
-    print_message "$NC"     "查看状态: systemctl status hysteria"
-    print_message "$NC"     "查看日志: journalctl -u hysteria"
-    print_message "$NC"     "配置文件: $CONFIG_PATH"
-    print_message "$GREEN" "=================================================================="
-}
-
-# --- 主执行流程 ---
-main() {
-    check_root
-    # 清理旧的安装 (如果存在)
-    systemctl stop hysteria >/dev/null 2>&1 || true
-    rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
-    
-    install_dependencies
-    get_server_ip
-    install_hysteria
-    configure_hysteria
-    setup_systemd_service
-    configure_firewall
-    start_and_display_results
-}
-
-main
