@@ -1,15 +1,15 @@
+
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 一键安装脚本 (v7 - 添加 masquerade 配置)
+# Hysteria 2 一键安装脚本 (v8 - 伪装为 www.bing.com)
 # 作者: Grok, based on original by Gemini
 #
 # 特点:
-# - 使用 obfs.type: salamander、auth 和 masquerade 配置，兼容 Hysteria 2 v2.6.2。
-# - 固定端口 443，支持伪装为 https://news.ycombinator.com。
+# - 使用 obfs.type: salamander、auth 和 masquerade 配置，伪装为 https://www.bing.com。
+# - 固定端口 443，兼容 Hysteria 2 v2.6.2。
 # - 增强证书验证、端口检查和服务启动鲁棒性。
 # - 详细错误日志，便于调试。
-# - 保留密码生成、TLS 配置和订阅链接输出。
 # - 支持卸载和日志查看功能。
 # ==============================================================================
 
@@ -79,7 +79,7 @@ install_dependencies() {
         exit 1
     fi
     $pkg_manager install -y curl gawk coreutils net-tools openssl || { print_message "$RED" "错误：依赖安装失败"; exit 1; }
-    for cmd in curl gawk shuf tr head netstat openssl; do
+    for cmd in curl gawk tr head netstat openssl; do
         command_exists "$cmd" || { print_message "$RED" "错误：依赖 $cmd 未安装"; exit 1; }
     done
     print_message "$GREEN" "依赖安装完成"
@@ -89,6 +89,7 @@ install_dependencies() {
 cleanup_old_install() {
     print_message "$YELLOW" "步骤 3/7: 清理旧安装"
     systemctl stop hysteria 2>/dev/null || true
+    systemctl disable hysteria 2>/dev/null || true
     rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
     rm -rf "$INSTALL_DIR"
     systemctl daemon-reload 2>/dev/null || true
@@ -124,7 +125,7 @@ configure_hysteria() {
     local password="Se7RAuFZ8Lzg"  # 使用你的示例密码
     print_message "$YELLOW" "检查端口 $port ..."
     if netstat -tulnp | grep -q ":${port}"; then
-        print_message "$RED" "错误：端口 $port 已占用"
+        print_message "$RED" "错误：端口 $port 已占用，请释放端口或选择其他端口"
         exit 1
     fi
     print_message "$YELLOW" "下载证书和密钥..."
@@ -153,7 +154,7 @@ obfs:
 masquerade:
   type: proxy
   proxy:
-    url: https://bing.com
+    url: https://www.bing.com/
     rewriteHost: true
 EOF
     chmod 644 "$CONFIG_PATH"
@@ -191,7 +192,7 @@ print_summary() {
     systemctl is-active --quiet hysteria || { print_message "$RED" "错误：服务未运行，查看日志: journalctl -u hysteria"; exit 1; }
     local ip=$(curl -s --retry 3 --retry-delay 2 http://checkip.amazonaws.com || curl -s --retry 3 --retry-delay 2 https://api.ipify.org)
     [ -n "$ip" ] || { print_message "$RED" "错误：无法获取服务器 IP"; exit 1; }
-    local sni="bing.com"
+    local sni="www.bing.com"
     local tag="Hysteria-Node"
     local link="hysteria2://${OBFS_PASSWORD}@${ip}:${LISTEN_PORT}?sni=${sni}&insecure=1#${tag}"
     print_message "$GREEN" "部署成功！配置信息："
@@ -251,4 +252,3 @@ main() {
 }
 
 main "$@"
-
