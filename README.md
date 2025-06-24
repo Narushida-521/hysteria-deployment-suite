@@ -91,33 +91,21 @@ chmod \+x deploy.sh
 
 此模式利用Docker实现了环境的完全隔离和无可比拟的可移植性，是现代运维和持续集成/持续部署(CI/CD)的最佳实践。
 
-第二步：检查服务器环境（首次部署需要）
+检查服务器环境（首次部署需要）
 检查 Docker 是否安装：
 在服务器的命令行中输入 docker --version。如果能看到版本号，说明已安装。如果没有，请用以下一键脚本进行安装：
-
-Bash
-
-curl -fsSL https://get.docker.com | bash
+** bash curl -fsSL https://get.docker.com | bash
 检查防火墙和安全组：
 这是最容易被忽略但最关键的一步。请确保服务器的防火墙（如 ufw）和您云服务商（如阿里云、腾讯云、AWS）控制台里的“安全组”规则，已经为您计划使用的端口（比如 443）同时开放了 TCP 和 UDP 流量。
-
 以 ufw 防火墙为例，开放 443 端口的命令是：
-
-Bash
-
-sudo ufw allow 443/tcp
-sudo ufw allow 443/udp
-sudo ufw reload
+** sudo ufw allow 443/tcp
+** sudo ufw allow 443/udp
+** sudo ufw reload
 第三步：执行“一键部署”命令
 现在，请在您的服务器终端上，运行我们精心打造的、最终的单行部署命令。
-
 请务必将 YOUR_DOCKERHUB_USERNAME 替换为您的真实用户名，并设置一个足够强的密码。
-
 Bash
-
-docker run -d --name stormgate --restart always --cap-add=NET_ADMIN -p 443:443/udp -p 443:443/tcp -v /root/stormgate_config:/etc/hysteria -e PASSWORD="请设置一个真实的、超强的密码" -e MASQUERADE_URL="https://www.bing.com/" YOUR_DOCKERHUB_USERNAME/stormgate:2.0
-
-
+docker run -d --name stormgate --restart always --cap-add=NET_ADMIN -p 8443:443/udp -p 8443:443/tcp -v /root/stormgate_config:/etc/hysteria -e PASSWORD="20250624" -e MASQUERADE_URL="https://www.bing.com/" naxida/stormgate:1.0
 ## **项目结构**
 
 hysteria-deployment-suite/  
