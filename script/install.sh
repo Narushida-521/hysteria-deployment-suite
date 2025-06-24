@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 标准一键部署脚本 (v22 - 512MB内存优化版)
+# Hysteria 2 标准一键部署脚本 (v23 - 含备用证书)
 #
 # 特点:
 # - [新] 专为标准服务器环境 (>=512MB 内存) 设计，性能更稳定。
 # - [新] 使用 systemd 管理服务，更专业、更可靠。
-# - [新] 自动安装所有必需的依赖项。
+# - [核心] 当本地证书生成失败时，会自动下载预制证书作为后备方案。
 # - [保留] 使用随机端口，增强安全性。
 # - [保留] 提供卸载和日志查看功能，方便管理。
 # ==============================================================================
@@ -77,7 +77,7 @@ if [ "$#" -gt 0 ]; then
     esac
 fi
 
-print_message "$YELLOW" "开始 Hysteria 2 标准部署脚本 (512MB内存优化版)..."
+print_message "$YELLOW" "开始 Hysteria 2 标准部署脚本 (含备用证书)..."
 
 # 1. 检查环境
 print_message "$YELLOW" "步骤 1: 检查环境..."
@@ -140,11 +140,19 @@ mkdir -p "$INSTALL_DIR"
 LISTEN_PORT=$(shuf -i 10000-65535 -n 1)
 OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
-print_message "$YELLOW" "正在使用 openssl 生成证书..."
-if ! openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
-    print_message "$RED" "生成证书失败。"; exit 1
+# [核心] 尝试生成证书，如果失败则下载预制证书
+print_message "$YELLOW" "正在生成证书 (如果失败将自动使用备用方案)..."
+if command -v openssl &>/dev/null && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
+    print_message "$GREEN" "成功使用 openssl 生成了新证书。"
+else
+    print_message "$YELLOW" "本地证书生成失败！正在启动备用方案：下载您指定的预制证书..."
+    KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
+    CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
+    if ! curl -Lso "$KEY_PATH" "$KEY_URL" || ! curl -Lso "$CERT_PATH" "$CERT_URL"; then
+        print_message "$RED" "致命错误：备用证书下载失败，安装无法继续。"; exit 1
+    fi
+    print_message "$GREEN" "备用证书下载成功。"
 fi
-print_message "$GREEN" "证书生成成功。"
 
 print_message "$YELLOW" "正在创建配置文件..."
 cat > "$CONFIG_PATH" <<EOF
