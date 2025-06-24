@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 标准一键部署脚本 (v25 - 依赖项确认)
+# Hysteria 2 标准一键部署脚本 (v26 - 移除自动依赖安装)
 #
 # 特点:
-# - [修正] 修正了 Debian/Ubuntu 系统下 awk 依赖包的名称为 gawk。
-# - [新] 专为标准服务器环境 (>=512MB 内存) 设计，性能更稳定。
-# - [新] 使用 systemd 管理服务，更专业、更可靠。
-# - [核心] 当本地证书生成失败时，会自动下载预制证书作为后备方案。
+# - [核心] 移除了所有自动安装依赖的步骤，脚本更纯粹、运行更快。
+# - [核心] 增加了环境自检功能，如果缺少核心工具会明确提示。
+# - [保留] 使用 systemd 管理服务，专业可靠。
+# - [保留] 当本地证书生成失败时，会自动下载预制证书作为后备方案。
 # - [保留] 使用随机端口，增强安全性。
 # - [保留] 提供卸载和日志查看功能，方便管理。
 # ==============================================================================
@@ -78,7 +78,7 @@ if [ "$#" -gt 0 ]; then
     esac
 fi
 
-print_message "$YELLOW" "开始 Hysteria 2 标准部署脚本 (含备用证书)..."
+print_message "$YELLOW" "开始 Hysteria 2 标准部署脚本..."
 
 # 1. 检查环境
 print_message "$YELLOW" "步骤 1: 检查环境..."
@@ -87,39 +87,33 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# 2. 安装依赖
-print_message "$YELLOW" "步骤 2: 安装依赖..."
-if command -v apt-get &>/dev/null; then
-    apt-get update
-    # FIX: On Debian/Ubuntu, 'awk' is a virtual package, 'gawk' is the provider.
-    apt-get install -y curl coreutils openssl gawk
-elif command -v yum &>/dev/null; then
-    yum install -y curl coreutils openssl gawk
-elif command -v dnf &>/dev/null; then
-    dnf install -y curl coreutils openssl gawk
-else
-    print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'coreutils', 'openssl', 'gawk'。"
-    exit 1
-fi
-print_message "$GREEN" "依赖安装成功。"
+# [核心] 检查核心工具是否存在，不再尝试自动安装
+for cmd in curl coreutils openssl gawk shuf tr head; do
+    if ! command -v "$cmd" &>/dev/null; then
+        print_message "$RED" "致命错误：核心命令 '$cmd' 不存在。请手动安装后再运行此脚本。"
+        exit 1
+    fi
+done
+print_message "$GREEN" "环境检查通过。"
 
-# 3. 清理旧的安装
-print_message "$YELLOW" "步骤 3: 清理旧的 Hysteria 2 安装..."
+
+# 2. 清理旧的安装
+print_message "$YELLOW" "步骤 2: 清理旧的 Hysteria 2 安装..."
 systemctl stop hysteria || true
 rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
 rm -rf "$INSTALL_DIR"
 print_message "$GREEN" "旧文件和进程清理完毕。"
 
-# 4. 获取服务器IP
-print_message "$YELLOW" "步骤 4: 获取公网 IP..."
+# 3. 获取服务器IP
+print_message "$YELLOW" "步骤 3: 获取公网 IP..."
 SERVER_IP=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
 if [ -z "$SERVER_IP" ]; then
     print_message "$RED" "无法自动获取服务器公网 IP 地址。"; exit 1
 fi
 print_message "$GREEN" "获取到公网 IP: $SERVER_IP"
 
-# 5. 安装 Hysteria
-print_message "$YELLOW" "步骤 5: 安装 Hysteria 2..."
+# 4. 安装 Hysteria
+print_message "$YELLOW" "步骤 4: 安装 Hysteria 2..."
 ARCH=$(uname -m)
 case $ARCH in
     x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; *) print_message "$RED" "不支持的架构: $ARCH"; exit 1 ;;
@@ -136,8 +130,8 @@ chmod +x "$HYSTERIA_BIN"
 "$HYSTERIA_BIN" version
 print_message "$GREEN" "Hysteria 2 安装和验证成功。"
 
-# 6. 配置 Hysteria
-print_message "$YELLOW" "步骤 6: 配置 Hysteria 2..."
+# 5. 配置 Hysteria
+print_message "$YELLOW" "步骤 5: 配置 Hysteria 2..."
 mkdir -p "$INSTALL_DIR"
 LISTEN_PORT=$(shuf -i 10000-65535 -n 1)
 OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
@@ -168,8 +162,8 @@ obfs:
 EOF
 print_message "$GREEN" "配置文件创建成功。"
 
-# 7. 创建 Systemd 服务
-print_message "$YELLOW" "步骤 7: 创建 Systemd 服务..."
+# 6. 创建 Systemd 服务
+print_message "$YELLOW" "步骤 6: 创建 Systemd 服务..."
 cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=Hysteria 2 Service
@@ -188,8 +182,8 @@ WantedBy=multi-user.target
 EOF
 print_message "$GREEN" "Systemd 服务文件创建成功。"
 
-# 8. 启动服务并配置防火墙
-print_message "$YELLOW" "步骤 8: 启动服务并配置防火墙..."
+# 7. 启动服务并配置防火墙
+print_message "$YELLOW" "步骤 7: 启动服务并配置防火墙..."
 systemctl daemon-reload
 systemctl enable --now hysteria
 
@@ -204,8 +198,8 @@ else
 fi
 print_message "$GREEN" "服务启动并配置防火墙完毕。"
 
-# 9. 最终诊断和输出
-print_message "$YELLOW" "步骤 9: 最终诊断和输出配置..."
+# 8. 最终诊断和输出
+print_message "$YELLOW" "步骤 8: 最终诊断和输出配置..."
 sleep 3
 set +e # 临时禁用 "exit on error"
 if systemctl is-active --quiet hysteria; then
