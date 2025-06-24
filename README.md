@@ -92,6 +92,7 @@ chmod \+x deploy.sh
 此模式利用Docker实现了环境的完全隔离和无可比拟的可移植性，是现代运维和持续集成/持续部署(CI/CD)的最佳实践。
 
 #### **✅ 前提条件**
+* 一键安装docker bash <(curl -fsSL https://get.docker.com)
 
 * 服务器上已正确安装 Docker 和 Docker Compose。
 
