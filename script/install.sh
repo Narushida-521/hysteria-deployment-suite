@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v15 - Non-Systemd Final)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v16 - Final Memory Optimization)
 #
 # 特点:
-# - [核心] 完全移除对 systemd 的依赖，适用于 OpenVZ/LXC 等特殊环境。
-# - [核心] 使用 nohup 和 pkill 来管理后台进程，确保服务能正确启动和重启。
-# - [核心] 日志和诊断功能完全重写，不再使用 systemctl 和 journalctl。
-# - 自动处理低内存环境的 Swap 交换空间问题。
+# - [核心] 完全移除 Swap 相关操作，以兼容不允许 Swap 的 OpenVZ/LXC 环境。
+# - [核心] 极致优化 apt-get 命令，最大限度减少内存消耗。
+# - [核心] 对依赖安装结果进行检查，如果失败则明确提示。
+# - 完全移除对 systemd 的依赖，使用 nohup 管理进程。
 # - 使用最终正确格式的 hysteria2:// 订阅链接。
-# - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
+# - 内置调试模式 (`set -ex`)。
 # ==============================================================================
 
 # --- 脚本设置 ---
@@ -29,8 +29,6 @@ CERT_PATH="/etc/hysteria/cert.pem"
 KEY_PATH="/etc/hysteria/key.pem"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HYSTERIA_LOG="/tmp/hysteria.log"
-SWAP_FILE="/tmp/swapfile.hysteria"
-SWAP_SIZE="512M"
 
 # --- 辅助函数 ---
 print_message() {
@@ -41,29 +39,8 @@ print_message() {
     echo "=================================================================="
 }
 
-# --- 低内存环境处理函数 ---
-create_swap() {
-    print_message "$YELLOW" "检测到低内存环境，正在创建 ${SWAP_SIZE} 的交换空间..."
-    fallocate -l "$SWAP_SIZE" "$SWAP_FILE" >/dev/null 2>&1 || dd if=/dev/zero of="$SWAP_FILE" bs=1M count=512 >/dev/null 2>&1
-    chmod 600 "$SWAP_FILE"
-    mkswap "$SWAP_FILE"
-    swapon "$SWAP_FILE"
-    print_message "$GREEN" "交换空间创建并激活成功。"
-}
-
-cleanup_swap() {
-    if [ -f "$SWAP_FILE" ]; then
-        print_message "$YELLOW" "正在清理临时交换空间..."
-        swapoff "$SWAP_FILE"
-        rm -f "$SWAP_FILE"
-        print_message "$GREEN" "临时交换空间清理完毕。"
-    fi
-}
-
 # --- 主执行流程 ---
 main() {
-    trap cleanup_swap EXIT
-    
     print_message "$YELLOW" "开始执行脚本，当前用户: $(whoami)"
     
     if [ "$(id -u)" -ne 0 ]; then
@@ -72,8 +49,6 @@ main() {
     fi
     print_message "$GREEN" "Root 权限检查通过。"
     
-    create_swap
-
     # 清理旧的安装
     print_message "$YELLOW" "正在停止任何旧的 Hysteria 进程..."
     pkill -f "$HYSTERIA_BIN" || true
@@ -83,9 +58,11 @@ main() {
     # 安装依赖
     print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl, coreutils)..."
     if command -v apt-get &>/dev/null; then
+        # 极致优化 apt-get 操作以减少内存和磁盘占用
         apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false
         apt-get install -y --no-install-recommends curl jq iproute2 openssl coreutils
         apt-get clean
+        rm -rf /var/lib/apt/lists/*
     elif command -v yum &>/dev/null; then
         yum install -y curl jq iproute openssl coreutils
         yum clean all
@@ -96,7 +73,15 @@ main() {
         print_message "$RED" "无法确定包管理器，请手动安装 'curl', 'jq', 'iproute2', 'openssl', 'coreutils'。"
         exit 1
     fi
-    print_message "$GREEN" "依赖安装完毕。"
+    
+    # 检查依赖是否真的安装成功
+    for cmd in curl jq ip openssl; do
+        if ! command -v "$cmd" &>/dev/null; then
+            print_message "$RED" "致命错误：依赖 '$cmd' 未能成功安装，很可能是内存不足导致。安装无法继续。"
+            exit 1
+        fi
+    done
+    print_message "$GREEN" "依赖安装成功。"
 
     # 获取服务器IP
     SERVER_IP=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
@@ -148,11 +133,9 @@ EOF
     fi
     print_message "$GREEN" "防火墙配置完毕。"
 
-    # [FIX] 启动并诊断 (非 Systemd 方式)
+    # 启动并诊断 (非 Systemd 方式)
     print_message "$YELLOW" "正在使用 nohup 启动 Hysteria 2 服务..."
-    # 先杀掉可能存在的旧进程
     pkill -f "$HYSTERIA_BIN" || true
-    # 使用 nohup 在后台启动新进程
     nohup "$HYSTERIA_BIN" server -c "$CONFIG_PATH" > "$HYSTERIA_LOG" 2>&1 &
     sleep 3
     
