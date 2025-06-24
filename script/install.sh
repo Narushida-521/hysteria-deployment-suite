@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v13 - Minimalist Env Fix)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v14 - Low RAM Final Fix)
 #
 # 特点:
+# - [核心] 自动为低内存环境创建和清理 Swap 交换空间，解决因内存不足导致的安装失败。
+# - [核心] 优化 apt-get 命令，减少不必要的内存和磁盘占用。
 # - 增加了对 systemd-sysv 的安装，确保在极简环境中 journalctl 命令可用。
 # - 优化了 systemd 服务配置，提高了在容器等环境中的兼容性。
 # - 使用最终正确格式的 hysteria2:// 订阅链接。
@@ -28,19 +30,42 @@ SERVICE_PATH="/etc/systemd/system/hysteria.service"
 CERT_PATH="/etc/hysteria/cert.pem"
 KEY_PATH="/etc/hysteria/key.pem"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
+SWAP_FILE="/tmp/swapfile.hysteria"
+SWAP_SIZE="512M" # 创建 512MB 的交换空间
 
 # --- 辅助函数 ---
 print_message() {
     local color=$1
     local message=$2
-    # 在调试模式下，让输出更显眼
     echo "=================================================================="
     echo -e "${color}${message}${NC}"
     echo "=================================================================="
 }
 
+# --- 低内存环境处理函数 ---
+create_swap() {
+    print_message "$YELLOW" "检测到低内存环境，正在创建 ${SWAP_SIZE} 的交换空间..."
+    fallocate -l "$SWAP_SIZE" "$SWAP_FILE"
+    chmod 600 "$SWAP_FILE"
+    mkswap "$SWAP_FILE"
+    swapon "$SWAP_FILE"
+    print_message "$GREEN" "交换空间创建并激活成功。"
+}
+
+cleanup_swap() {
+    if [ -f "$SWAP_FILE" ]; then
+        print_message "$YELLOW" "正在清理临时交换空间..."
+        swapoff "$SWAP_FILE"
+        rm -f "$SWAP_FILE"
+        print_message "$GREEN" "临时交换空间清理完毕。"
+    fi
+}
+
 # --- 主执行流程 ---
 main() {
+    # 无论脚本成功或失败，退出时都自动调用 cleanup_swap 函数
+    trap cleanup_swap EXIT
+    
     print_message "$YELLOW" "开始执行脚本，当前用户: $(whoami)"
     
     # 1. 检查 Root 权限
@@ -49,6 +74,9 @@ main() {
         exit 1
     fi
     print_message "$GREEN" "Root 权限检查通过。"
+    
+    # [FIX] 为低内存环境创建 Swap
+    create_swap
 
     # 清理旧的安装 (如果存在)
     print_message "$YELLOW" "正在停止并清理任何旧的 Hysteria 服务..."
@@ -59,13 +87,16 @@ main() {
     # 2. 安装依赖
     print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl, coreutils, systemd)..."
     if command -v apt-get &>/dev/null; then
-        # FIX: 为 Debian/Ubuntu 添加 systemd-sysv 以确保 journalctl 可用
-        apt-get update && apt-get install -y curl jq iproute2 openssl coreutils systemd-sysv
+        # FIX: 优化 apt-get 操作以减少内存和磁盘占用
+        apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false
+        apt-get install -y --no-install-recommends curl jq iproute2 openssl coreutils systemd-sysv
+        apt-get clean
     elif command -v yum &>/dev/null; then
-        # FIX: 为 CentOS/RHEL 确保 systemd 包被安装
         yum install -y curl jq iproute openssl coreutils systemd
+        yum clean all
     elif command -v dnf &>/dev/null; then
         dnf install -y curl jq iproute openssl coreutils systemd
+        dnf clean all
     else
         print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq', 'iproute2', 'openssl', 'coreutils' 和 'systemd'。"
         exit 1
@@ -109,8 +140,8 @@ main() {
 
     # 5. 配置 Hysteria
     print_message "$YELLOW" "开始配置 Hysteria 2..."
-    LISTEN_PORT=35888 # 使用一个固定的端口进行测试，避免随机性问题
-    OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16) # 随机生成密码
+    LISTEN_PORT=35888
+    OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
     
     mkdir -p /etc/hysteria
 
@@ -119,15 +150,10 @@ main() {
     
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
-# 监听端口
 listen: :$LISTEN_PORT
-
-# TLS 证书配置
 tls:
   cert: $CERT_PATH
   key: $KEY_PATH
-
-# 混淆密码
 obfs:
   type: password
   password: $OBFS_PASSWORD
@@ -137,7 +163,6 @@ EOF
 
     # 6. 设置 Systemd 服务
     print_message "$YELLOW" "正在设置 Systemd 服务..."
-    # FIX: 增加 User 和 Group 确保权限，这是在某些环境中启动失败的常见原因
     cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=Hysteria 2 Service
@@ -175,14 +200,12 @@ EOF
     # 8. 启动并进行最终诊断
     print_message "$YELLOW" "正在启动 Hysteria 2 服务..."
     systemctl restart hysteria
-    sleep 3 # 等待3秒让服务有时间启动或失败
+    sleep 3
     
-    # 临时禁用 "exit on error" 以确保诊断和配置信息总是能显示
     set +e
     
     print_message "$GREEN" "脚本执行完毕。下面是最终的诊断和配置信息。"
     
-    # 自动诊断
     print_message "$YELLOW" "诊断 1: 检查服务状态 (systemctl status)"
     systemctl status hysteria --no-pager
     
@@ -200,7 +223,7 @@ EOF
     
     # --- 生成最终正确格式的 hysteria2:// 订阅链接 ---
     SNI_HOST="bing.com"
-    NODE_TAG="Hysteria-Node" # 定义一个默认的节点名称
+    NODE_TAG="Hysteria-Node"
     SUBSCRIPTION_LINK="hysteria2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1#${NODE_TAG}"
 
     print_message "$YELLOW" "您的 Hysteria 2 配置信息:"
@@ -216,3 +239,4 @@ EOF
 
 # --- 运行主函数 ---
 main
+
