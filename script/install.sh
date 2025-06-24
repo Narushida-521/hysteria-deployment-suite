@@ -1,13 +1,14 @@
-
+```bash
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 一键安装脚本 (v8 - 伪装为 www.bing.com)
+# Hysteria 2 一键安装脚本 (v12 - 移除 obfs，伪装为 www.bing.com，启用 BBR)
 # 作者: Grok, based on original by Gemini
 #
 # 特点:
-# - 使用 obfs.type: salamander、auth 和 masquerade 配置，伪装为 https://www.bing.com。
-# - 固定端口 443，兼容 Hysteria 2 v2.6.2。
+# - 移除 obfs 配置，保留 auth 和 masquerade，伪装为 https://www.bing.com。
+# - 启用 BBR 拥塞控制算法，优化网络性能。
+# - 固定端口 443，备用 8443，兼容 Hysteria 2 v2.6.2。
 # - 增强证书验证、端口检查和服务启动鲁棒性。
 # - 详细错误日志，便于调试。
 # - 支持卸载和日志查看功能。
@@ -56,16 +57,44 @@ file_valid() {
 
 # 1. 检查环境
 check_environment() {
-    print_message "$YELLOW" "步骤 1/7: 检查系统环境"
+    print_message "$YELLOW" "步骤 1/8: 检查系统环境"
     [ "$(id -u)" -eq 0 ] || { print_message "$RED" "错误：必须以 root 权限运行"; exit 1; }
     command_exists systemctl || { print_message "$RED" "错误：未检测到 systemd"; exit 1; }
     [ -r /dev/urandom ] || { print_message "$RED" "错误：/dev/urandom 不可用"; exit 1; }
-    print_message "$GREEN" "环境检查通过"
+    local kernel_version=$(uname -r | cut -d'-' -f1)
+    local kernel_major=$(echo "$kernel_version" | cut -d'.' -f1)
+    local kernel_minor=$(echo "$kernel_version" | cut -d'.' -f2)
+    if [ "$kernel_major" -lt 4 ] || { [ "$kernel_major" -eq 4 ] && [ "$kernel_minor" -lt 9 ]; }; then
+        print_message "$RED" "错误：内核版本 $kernel_version 不支持 BBR（需 4.9 或以上）"
+        exit 1
+    fi
+    print_message "$GREEN" "环境检查通过，内核版本: $kernel_version"
 }
 
-# 2. 安装依赖
+# 2. 启用 BBR
+enable_bbr() {
+    print_message "$YELLOW" "步骤 2/8: 启用 BBR 拥塞控制"
+    modprobe tcp_bbr 2>/dev/null || true
+    if ! lsmod | grep -q bbr; then
+        print_message "$RED" "错误：无法加载 tcp_bbr 模块"
+        exit 1
+    fi
+    sysctl -w net.core.default_qdisc=fq >/dev/null
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null
+    echo "net.core.default_qdisc=fq" | tee -a /etc/sysctl.conf >/dev/null
+    echo "net.ipv4.tcp_congestion_control=bbr" | tee -a /etc/sysctl.conf >/dev/null
+    sysctl -p >/dev/null
+    if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
+        print_message "$GREEN" "BBR 已启用"
+    else
+        print_message "$RED" "错误：BBR 启用失败"
+        exit 1
+    fi
+}
+
+# 3. 安装依赖
 install_dependencies() {
-    print_message "$YELLOW" "步骤 2/7: 安装依赖"
+    print_message "$YELLOW" "步骤 3/8: 安装依赖"
     local pkg_manager=""
     if command_exists apt-get; then
         pkg_manager="apt-get"
@@ -85,9 +114,9 @@ install_dependencies() {
     print_message "$GREEN" "依赖安装完成"
 }
 
-# 3. 清理旧安装
+# 4. 清理旧安装
 cleanup_old_install() {
-    print_message "$YELLOW" "步骤 3/7: 清理旧安装"
+    print_message "$YELLOW" "步骤 4/8: 清理旧安装"
     systemctl stop hysteria 2>/dev/null || true
     systemctl disable hysteria 2>/dev/null || true
     rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
@@ -96,9 +125,9 @@ cleanup_old_install() {
     print_message "$GREEN" "旧安装清理完成"
 }
 
-# 4. 下载 Hysteria
+# 5. 下载 Hysteria
 download_hysteria() {
-    print_message "$YELLOW" "步骤 4/7: 下载 Hysteria 2"
+    print_message "$YELLOW" "步骤 5/8: 下载 Hysteria 2"
     local arch=""
     case $(uname -m) in
         x86_64) arch="amd64" ;;
@@ -115,9 +144,9 @@ download_hysteria() {
     "$HYSTERIA_BIN" version
 }
 
-# 5. 配置 Hysteria
+# 6. 配置 Hysteria
 configure_hysteria() {
-    print_message "$YELLOW" "步骤 5/7: 创建配置文件"
+    print_message "$YELLOW" "步骤 6/8: 创建配置文件"
     mkdir -p "$INSTALL_DIR" || { print_message "$RED" "错误：无法创建目录 $INSTALL_DIR"; exit 1; }
     chmod 755 "$INSTALL_DIR"
     [ -w "$INSTALL_DIR" ] || { print_message "$RED" "错误：目录 $INSTALL_DIR 不可写"; exit 1; }
@@ -125,8 +154,12 @@ configure_hysteria() {
     local password="Se7RAuFZ8Lzg"  # 使用你的示例密码
     print_message "$YELLOW" "检查端口 $port ..."
     if netstat -tulnp | grep -q ":${port}"; then
-        print_message "$RED" "错误：端口 $port 已占用，请释放端口或选择其他端口"
-        exit 1
+        print_message "$RED" "错误：端口 $port 已占用，尝试备用端口 8443..."
+        port=8443
+        if netstat -tulnp | grep -q ":${port}"; then
+            print_message "$RED" "错误：备用端口 $port 也已占用，请手动释放端口"
+            exit 1
+        fi
     fi
     print_message "$YELLOW" "下载证书和密钥..."
     echo "DEBUG: 下载证书: curl -Lso $CERT_PATH $CERT_URL"
@@ -148,9 +181,6 @@ tls:
 auth:
   type: password
   password: ${password}
-obfs:
-  type: salamander
-  password: ${password}
 masquerade:
   type: proxy
   proxy:
@@ -160,13 +190,13 @@ EOF
     chmod 644 "$CONFIG_PATH"
     file_valid "$CONFIG_PATH" || { print_message "$RED" "错误：配置文件 $CONFIG_PATH 创建失败"; exit 1; }
     export LISTEN_PORT="$port"
-    export OBFS_PASSWORD="$password"
+    export AUTH_PASSWORD="$password"
     print_message "$GREEN" "配置文件生成完成"
 }
 
-# 6. 设置服务
+# 7. 设置服务
 setup_service() {
-    print_message "$YELLOW" "步骤 6/7: 设置服务"
+    print_message "$YELLOW" "步骤 7/8: 设置服务"
     cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=Hysteria 2 Service
@@ -186,19 +216,19 @@ EOF
     print_message "$GREEN" "服务设置完成"
 }
 
-# 7. 总结输出
+# 8. 总结输出
 print_summary() {
-    print_message "$YELLOW" "步骤 7/7: 部署总结"
+    print_message "$YELLOW" "步骤 8/8: 部署总结"
     systemctl is-active --quiet hysteria || { print_message "$RED" "错误：服务未运行，查看日志: journalctl -u hysteria"; exit 1; }
     local ip=$(curl -s --retry 3 --retry-delay 2 http://checkip.amazonaws.com || curl -s --retry 3 --retry-delay 2 https://api.ipify.org)
     [ -n "$ip" ] || { print_message "$RED" "错误：无法获取服务器 IP"; exit 1; }
     local sni="www.bing.com"
     local tag="Hysteria-Node"
-    local link="hysteria2://${OBFS_PASSWORD}@${ip}:${LISTEN_PORT}?sni=${sni}&insecure=1#${tag}"
+    local link="hysteria2://${AUTH_PASSWORD}@${ip}:${LISTEN_PORT}?sni=${sni}&insecure=1#${tag}"
     print_message "$GREEN" "部署成功！配置信息："
     echo -e "服务器地址: ${ip}"
     echo -e "端口: ${LISTEN_PORT}"
-    echo -e "密码: ${OBFS_PASSWORD}"
+    echo -e "密码: ${AUTH_PASSWORD}"
     echo -e "SNI: ${sni}"
     echo -e "跳过证书验证: true"
     echo -e "\n订阅链接: ${link}"
@@ -243,6 +273,7 @@ main() {
     handle_args "$@"
     trap 'print_message "$RED" "脚本中断或错误退出，请检查日志: journalctl -xe"' ERR INT
     check_environment
+    enable_bbr
     install_dependencies
     cleanup_old_install
     download_hysteria
@@ -252,3 +283,4 @@ main() {
 }
 
 main "$@"
+```
