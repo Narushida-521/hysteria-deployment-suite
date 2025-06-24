@@ -1,21 +1,21 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v16 - Final Memory Optimization)
+# Hysteria 2 Ultimate All-in-One Deployment Script (v17 - Final Compatibility)
 #
 # 特点:
-# - [核心] 完全移除 Swap 相关操作，以兼容不允许 Swap 的 OpenVZ/LXC 环境。
-# - [核心] 极致优化 apt-get 命令，最大限度减少内存消耗。
-# - [核心] 对依赖安装结果进行检查，如果失败则明确提示。
-# - 完全移除对 systemd 的依赖，使用 nohup 管理进程。
-# - 使用最终正确格式的 hysteria2:// 订阅链接。
-# - 内置调试模式 (`set -ex`)。
+# - [终极] 专为极低内存 (64MB)、无 Swap、非 Systemd (OpenVZ/LXC) 等特殊环境设计。
+# - [核心] 绝不尝试安装任何依赖，只检查核心工具是否存在，从根源避免内存耗尽。
+# - [核心] 所有文件均安装在 /root/.hysteria2 目录，不触碰任何系统目录，兼容性最强。
+# - [核心] 使用 nohup 和 pkill 管理后台进程，不依赖任何特定 init 系统。
+# - [核心] 提供卸载和日志查看功能，方便管理。
 # ==============================================================================
 
 # --- 脚本设置 ---
 # 如果任何命令失败，则立即退出 (e)
+# 如果变量未定义，则视为错误 (u)
 # 打印所有执行的命令到终端 (x)
-set -ex
+set -eux
 
 # --- 颜色定义 ---
 GREEN='\033[0;32m'
@@ -24,96 +24,123 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # --- 静态变量 ---
-CONFIG_PATH="/etc/hysteria/config.yaml"
-CERT_PATH="/etc/hysteria/cert.pem"
-KEY_PATH="/etc/hysteria/key.pem"
-HYSTERIA_BIN="/usr/local/bin/hysteria"
-HYSTERIA_LOG="/tmp/hysteria.log"
+INSTALL_DIR="/root/.hysteria2"
+CONFIG_PATH="${INSTALL_DIR}/config.yaml"
+CERT_PATH="${INSTALL_DIR}/server.crt"
+KEY_PATH="${INSTALL_DIR}/server.key"
+HYSTERIA_BIN="${INSTALL_DIR}/hysteria"
+HYSTERIA_LOG="${INSTALL_DIR}/hysteria.log"
 
 # --- 辅助函数 ---
 print_message() {
     local color=$1
     local message=$2
-    echo "=================================================================="
+    echo -e "\n${color}==================================================================${NC}"
     echo -e "${color}${message}${NC}"
-    echo "=================================================================="
+    echo -e "${color}==================================================================${NC}\n"
+}
+
+# --- 卸载函数 ---
+uninstall() {
+    print_message "$YELLOW" "正在卸载 Hysteria 2..."
+    # 停止进程
+    pkill -f "$HYSTERIA_BIN" || true
+    # 删除安装目录
+    rm -rf "$INSTALL_DIR"
+    print_message "$GREEN" "Hysteria 2 卸载完成。"
+    exit 0
+}
+
+# --- 日志函数 ---
+show_logs() {
+    print_message "$YELLOW" "正在显示 Hysteria 2 日志..."
+    if [ -f "$HYSTERIA_LOG" ]; then
+        tail -n 50 "$HYSTERIA_LOG"
+    else
+        print_message "$RED" "错误：日志文件不存在。"
+    fi
+    exit 0
 }
 
 # --- 主执行流程 ---
-main() {
-    print_message "$YELLOW" "开始执行脚本，当前用户: $(whoami)"
-    
-    if [ "$(id -u)" -ne 0 ]; then
-        print_message "$RED" "错误：此脚本必须以 root 权限运行。"
-        exit 1
-    fi
-    print_message "$GREEN" "Root 权限检查通过。"
-    
-    # 清理旧的安装
-    print_message "$YELLOW" "正在停止任何旧的 Hysteria 进程..."
-    pkill -f "$HYSTERIA_BIN" || true
-    rm -f "$HYSTERIA_BIN" "$CONFIG_PATH" "$CERT_PATH" "$KEY_PATH"
-    print_message "$GREEN" "旧文件和进程清理完毕。"
 
-    # 安装依赖
-    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl, coreutils)..."
-    if command -v apt-get &>/dev/null; then
-        # 极致优化 apt-get 操作以减少内存和磁盘占用
-        apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false
-        apt-get install -y --no-install-recommends curl jq iproute2 openssl coreutils
-        apt-get clean
-        rm -rf /var/lib/apt/lists/*
-    elif command -v yum &>/dev/null; then
-        yum install -y curl jq iproute openssl coreutils
-        yum clean all
-    elif command -v dnf &>/dev/null; then
-        dnf install -y curl jq iproute openssl coreutils
-        dnf clean all
-    else
-        print_message "$RED" "无法确定包管理器，请手动安装 'curl', 'jq', 'iproute2', 'openssl', 'coreutils'。"
-        exit 1
-    fi
-    
-    # 检查依赖是否真的安装成功
-    for cmd in curl jq ip openssl; do
-        if ! command -v "$cmd" &>/dev/null; then
-            print_message "$RED" "致命错误：依赖 '$cmd' 未能成功安装，很可能是内存不足导致。安装无法继续。"
+# 处理命令行参数 (uninstall, logs)
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        uninstall|del|remove)
+            uninstall
+            ;;
+        log|logs)
+            show_logs
+            ;;
+        *)
+            print_message "$RED" "未知参数: $1. 可用参数: uninstall, logs"
             exit 1
-        fi
-    done
-    print_message "$GREEN" "依赖安装成功。"
-
-    # 获取服务器IP
-    SERVER_IP=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
-    if [ -z "$SERVER_IP" ]; then
-        print_message "$RED" "无法自动获取服务器公网 IP 地址。"; exit 1
-    fi
-    print_message "$GREEN" "获取到公网 IP: $SERVER_IP"
-
-    # 安装 Hysteria
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; *) print_message "$RED" "不支持的架构: $ARCH"; exit 1 ;;
+            ;;
     esac
-    LATEST_V2_TAG=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases" | jq -r '[.[] | select(.tag_name | startswith("app/v2."))] | .[0].tag_name')
-    if [ -z "$LATEST_V2_TAG" ] || [ "$LATEST_V2_TAG" == "null" ]; then
-        print_message "$RED" "无法找到最新的 Hysteria 2 版本号。"; exit 1
-    fi
-    DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/${LATEST_V2_TAG}/hysteria-linux-${ARCH}"
-    print_message "$YELLOW" "正在从 $DOWNLOAD_URL 下载..."
-    curl -L -o "$HYSTERIA_BIN" "$DOWNLOAD_URL"
-    chmod +x "$HYSTERIA_BIN"
-    "$HYSTERIA_BIN" version
-    print_message "$GREEN" "Hysteria 2 安装和验证成功。"
+fi
 
-    # 配置 Hysteria
-    LISTEN_PORT=35888
-    OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
-    mkdir -p /etc/hysteria
-    print_message "$YELLOW" "正在使用 openssl 生成自签名证书..."
-    openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650
-    print_message "$YELLOW" "正在创建配置文件..."
-    cat > "$CONFIG_PATH" <<EOF
+print_message "$YELLOW" "开始 Hysteria 2 终极部署脚本..."
+
+# 1. 检查环境
+print_message "$YELLOW" "步骤 1: 检查环境..."
+if [ "$(id -u)" -ne 0 ]; then
+    print_message "$RED" "错误：此脚本必须以 root 权限运行。"
+    exit 1
+fi
+
+for cmd in curl openssl tr head; do
+    if ! command -v "$cmd" &>/dev/null; then
+        print_message "$RED" "致命错误：核心命令 '$cmd' 不存在。您的系统过于精简，无法继续安装。"
+        exit 1
+    fi
+done
+print_message "$GREEN" "环境检查通过。"
+
+# 2. 清理旧的安装
+print_message "$YELLOW" "步骤 2: 清理旧的 Hysteria 2 安装..."
+pkill -f "$HYSTERIA_BIN" || true
+rm -rf "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+print_message "$GREEN" "旧文件和进程清理完毕。"
+
+# 3. 获取服务器IP
+print_message "$YELLOW" "步骤 3: 获取公网 IP..."
+SERVER_IP=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
+if [ -z "$SERVER_IP" ]; then
+    print_message "$RED" "无法自动获取服务器公网 IP 地址。"; exit 1
+fi
+print_message "$GREEN" "获取到公网 IP: $SERVER_IP"
+
+# 4. 安装 Hysteria
+print_message "$YELLOW" "步骤 4: 安装 Hysteria 2..."
+ARCH=$(uname -m)
+case $ARCH in
+    x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; *) print_message "$RED" "不支持的架构: $ARCH"; exit 1 ;;
+esac
+# 直接从 GitHub 下载最新版本
+DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | grep "browser_download_url.*hysteria-linux-${ARCH}" | cut -d : -f 2,3 | tr -d \" | head -n 1)
+if [ -z "$DOWNLOAD_URL" ]; then
+    print_message "$RED" "无法找到最新的 Hysteria 2 下载链接。"; exit 1
+fi
+print_message "$YELLOW" "正在从 $DOWNLOAD_URL 下载..."
+if ! curl -L -o "$HYSTERIA_BIN" "$DOWNLOAD_URL"; then
+    print_message "$RED" "下载失败，请检查网络连接或 GitHub 访问。"; exit 1
+fi
+chmod +x "$HYSTERIA_BIN"
+"$HYSTERIA_BIN" version
+print_message "$GREEN" "Hysteria 2 安装和验证成功。"
+
+# 5. 配置 Hysteria
+print_message "$YELLOW" "步骤 5: 配置 Hysteria 2..."
+LISTEN_PORT=35888
+OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+print_message "$YELLOW" "正在生成自签名证书..."
+if ! openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
+    print_message "$RED" "生成证书失败。"; exit 1
+fi
+print_message "$YELLOW" "正在创建配置文件..."
+cat > "$CONFIG_PATH" <<EOF
 listen: :$LISTEN_PORT
 tls:
   cert: $CERT_PATH
@@ -122,59 +149,40 @@ obfs:
   type: password
   password: $OBFS_PASSWORD
 EOF
-    print_message "$GREEN" "配置完成。"
+print_message "$GREEN" "配置完成。"
 
-    # 配置防火墙
-    print_message "$YELLOW" "正在配置防火墙..."
-    if command -v ufw &>/dev/null; then
-        ufw allow "${LISTEN_PORT}/udp" >/dev/null
-    else
-        print_message "$YELLOW" "未检测到 ufw，请手动开放端口 ${LISTEN_PORT}/udp。"
-    fi
-    print_message "$GREEN" "防火墙配置完毕。"
+# 6. 启动 Hysteria
+print_message "$YELLOW" "步骤 6: 启动 Hysteria 2 服务..."
+# 使用 nohup 在后台启动
+nohup "$HYSTERIA_BIN" server -c "$CONFIG_PATH" > "$HYSTERIA_LOG" 2>&1 &
+sleep 3
+print_message "$GREEN" "启动命令已发送。"
 
-    # 启动并诊断 (非 Systemd 方式)
-    print_message "$YELLOW" "正在使用 nohup 启动 Hysteria 2 服务..."
-    pkill -f "$HYSTERIA_BIN" || true
-    nohup "$HYSTERIA_BIN" server -c "$CONFIG_PATH" > "$HYSTERIA_LOG" 2>&1 &
-    sleep 3
-    
-    set +e
-    print_message "$GREEN" "脚本执行完毕。下面是最终的诊断和配置信息。"
-    
-    print_message "$YELLOW" "诊断 1: 检查进程状态 (ps)"
-    if pgrep -f "$HYSTERIA_BIN"; then
-        print_message "$GREEN" "Hysteria 进程正在运行。"
-    else
-        print_message "$RED" "警告: 未发现 Hysteria 进程在运行。"
-    fi
+# 7. 最终诊断和输出
+print_message "$YELLOW" "步骤 7: 最终诊断和输出配置..."
+set +e # 临时禁用 "exit on error"
+if pgrep -f "$HYSTERIA_BIN"; then
+    print_message "$GREEN" "诊断成功: Hysteria 进程正在运行。"
+else
+    print_message "$RED" "诊断失败: 未发现 Hysteria 进程在运行。"
+    print_message "$YELLOW" "请查看日志获取错误信息: tail -n 50 $HYSTERIA_LOG"
+fi
 
-    print_message "$YELLOW" "诊断 2: 检查服务日志"
-    tail -n 20 "$HYSTERIA_LOG"
-    
-    print_message "$YELLOW" "诊断 3: 检查端口监听 (ss)"
-    if ! ss -ulpn | grep -q ":$LISTEN_PORT"; then
-        print_message "$RED" "警告: 未发现程序在监听端口 $LISTEN_PORT"
-    else
-        print_message "$GREEN" "端口 $LISTEN_PORT 监听正常。"
-    fi
-    
-    print_message "$GREEN" "所有诊断步骤已完成。"
-    
-    # 生成订阅链接
-    SNI_HOST="bing.com"
-    NODE_TAG="Hysteria-Node"
-    SUBSCRIPTION_LINK="hysteria2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1#${NODE_TAG}"
+SNI_HOST="bing.com"
+NODE_TAG="Hysteria-Node"
+SUBSCRIPTION_LINK="hysteria2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1#${NODE_TAG}"
 
-    print_message "$YELLOW" "您的 Hysteria 2 配置信息:"
-    echo -e "${GREEN}服务器地址: ${NC}$SERVER_IP"
-    echo -e "${GREEN}端口:       ${NC}$LISTEN_PORT"
-    echo -e "${GREEN}密码:       ${NC}$OBFS_PASSWORD"
-    echo -e "${GREEN}SNI/主机名: ${NC}${SNI_HOST}"
-    echo -e "${GREEN}跳过证书验证: ${NC}true"
+print_message "$YELLOW" "您的 Hysteria 2 配置信息:"
+echo -e "${GREEN}服务器地址: ${NC}$SERVER_IP"
+echo -e "${GREEN}端口:       ${NC}$LISTEN_PORT"
+echo -e "${GREEN}密码:       ${NC}$OBFS_PASSWORD"
+echo -e "${GREEN}SNI/主机名: ${NC}${SNI_HOST}"
+echo -e "${GREEN}跳过证书验证: ${NC}true"
 
-    print_message "$YELLOW" "您的客户端订阅链接 (hysteria2://):"
-    echo "$SUBSCRIPTION_LINK"
-}
+print_message "$YELLOW" "您的客户端订阅链接 (hysteria2://):"
+echo "$SUBSCRIPTION_LINK"
 
-main
+print_message "$GREEN" "部署完成！"
+echo -e "您可以使用以下命令管理服务:"
+echo -e "${YELLOW}查看日志:   bash $0 logs${NC}"
+echo -e "${YELLOW}卸载服务:   bash $0 uninstall${NC}"
