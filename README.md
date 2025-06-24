@@ -49,10 +49,6 @@
 
 bash \<(curl \-fsSL [https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/install.sh](https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/refs/heads/main/script/install.sh))
 
-**提示:** 请将上面的URL替换成您自己存放install.sh脚本的GitHub Raw地址。
-
-脚本将自动完成所有工作：安装依赖、下载Hysteria 2、生成配置、设置服务并启动。完成后，它将直接在屏幕上打印出您可以立即使用的客户端连接信息。
-
 ## **🏢 模式二：Spring Cloud企业级部署 (用于架构演示)**
 
 **警告：此模式极其复杂，仅用于满足特定的企业级架构演示需求，不推荐普通用户使用。**
