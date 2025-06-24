@@ -1,13 +1,14 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v8 - Optimized Output)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v9 - Guaranteed Output)
 #
 # 特点:
 # - 已修正 Hysteria 2 的兼容性问题。
 # - 使用 openssl 生成证书，替代已被移除的 `hysteria cert` 命令。
 # - 生成 Hysteria 2 的正确配置文件格式。
 # - 脚本结束时自动生成清晰的配置详情和订阅链接。
+# - 在最终诊断阶段禁用 "exit on error"，确保配置信息和链接总是能显示。
 # - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
 # - 在关键步骤增加明确的输出信息。
 # - 脚本结束时自动运行诊断命令，收集所有必要信息。
@@ -174,21 +175,28 @@ EOF
     systemctl restart hysteria
     sleep 3 # 等待3秒让服务有时间启动或失败
     
-    print_message "$GREEN" "脚本执行完毕。下面是最终的诊断信息。"
+    # --- FIX START: 临时禁用 "exit on error" 以确保诊断和配置信息总是能显示 ---
+    set +e
+    
+    print_message "$GREEN" "脚本执行完毕。下面是最终的诊断和配置信息。"
     
     # 自动诊断
     print_message "$YELLOW" "诊断 1: 检查服务状态 (systemctl status)"
-    systemctl status hysteria --no-pager || true # 使用 || true 确保即使服务失败也不会让脚本退出
+    systemctl status hysteria --no-pager
     
     print_message "$YELLOW" "诊断 2: 检查服务日志 (journalctl)"
-    journalctl -u hysteria -n 20 --no-pager || true
+    journalctl -u hysteria -n 20 --no-pager
     
     print_message "$YELLOW" "诊断 3: 检查端口监听 (ss)"
-    ss -ulpn | grep ":$LISTEN_PORT" || print_message "$RED" "未发现程序在监听端口 $LISTEN_PORT"
+    if ! ss -ulpn | grep -q ":$LISTEN_PORT"; then
+        print_message "$RED" "警告: 未发现程序在监听端口 $LISTEN_PORT"
+    else
+        print_message "$GREEN" "端口 $LISTEN_PORT 监听正常。"
+    fi
     
     print_message "$GREEN" "所有诊断步骤已完成。"
     
-    # --- FIX START: 输出详细配置信息和订阅链接 ---
+    # --- 输出详细配置信息和订阅链接 ---
     CLIENT_JSON=$(cat <<EOF
 {
   "server": "$SERVER_IP:$LISTEN_PORT",
