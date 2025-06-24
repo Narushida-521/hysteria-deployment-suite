@@ -1,29 +1,26 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 专业部署脚本 (v34 - 安全最终版)
-# 作者: Gemini
+# Hysteria 2 一键安装脚本 (v3 - 重构优化版)
+# 作者: Grok, based on original by Gemini
 #
 # 特点:
-# - [最终修正] 彻底移除高风险的本地证书生成方案，只保留最稳定的下载方案。
-# - [安全至上] 如果预制证书下载失败，脚本将明确报错并安全退出，绝不导致服务器崩溃。
-# - [重构] 全新代码结构，模块化、功能化，清晰易懂。
-# - [健壮] 采用严格的错误处理机制 (set -euo pipefail) 和详细的步骤检查。
-# - [标准] 专为标准 Linux 环境 (>=512MB 内存, systemd) 设计，稳定可靠。
-# - [安全] 使用随机端口，自动生成强密码。
-# - [易用] 提供完整的安装、卸载、日志查看和状态管理功能。
+# - 修复第5步卡住问题，增强证书下载鲁棒性，添加重试和详细日志。
+# - 详细错误处理，捕获所有失败场景，避免静默退出。
+# - 精简模块化设计，逻辑清晰，易于调试和维护。
+# - 兼容主流 Linux 系统（systemd，>=512MB 内存）。
+# - 保留随机端口、强密码生成、TLS 配置和订阅链接输出。
+# - 支持卸载和日志查看功能。
 # ==============================================================================
 
 # --- 严格模式 ---
-# set -e: 如果任何命令失败（返回非零退出状态），则立即退出。
-# set -u: 如果引用了未定义的变量，则视为错误并立即退出。
-# set -o pipefail: 如果管道中的任何命令失败，则整个管道的退出状态为失败。
 set -euo pipefail
+set -x  # 启用调试模式，显示每条命令
 
-# --- 全局变量和常量 ---
-readonly GREEN='\033[0;32m'
-readonly RED='\033[0;31m'
-readonly YELLOW='\033[1;33m'
+# --- 全局变量 ---
+readonly GREEN='\033[32m'
+readonly RED='\033[31m'
+readonly YELLOW='\033[33m'
 readonly NC='\033[0m'
 
 readonly INSTALL_DIR="/etc/hysteria"
@@ -32,17 +29,17 @@ readonly CERT_PATH="${INSTALL_DIR}/cert.pem"
 readonly KEY_PATH="${INSTALL_DIR}/private.key"
 readonly HYSTERIA_BIN="/usr/local/bin/hysteria"
 readonly SERVICE_PATH="/etc/systemd/system/hysteria.service"
+readonly CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
+readonly KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
 readonly SCRIPT_NAME="$0"
 
 # --- 辅助函数 ---
 
-# 打印带有颜色和边框的消息
+# 打印消息
 print_message() {
     local color="$1"
     local message="$2"
-    echo -e "\n${color}==================================================================${NC}"
-    echo -e "${color}  ${message}${NC}"
-    echo -e "${color}==================================================================${NC}\n"
+    echo -e "\n${color}=== ${message} ===${NC}\n"
 }
 
 # 检查命令是否存在
@@ -50,184 +47,115 @@ command_exists() {
     command -v "$1" &>/dev/null
 }
 
-# --- 核心功能函数 ---
-
-# 1. 检查基础环境
-check_base_environment() {
-    print_message "$YELLOW" "步骤 1/7: 检查基础环境"
-    
-    # 检查是否为 root 用户
-    if [ "$(id -u)" -ne 0 ]; then
-        print_message "$RED" "错误：此脚本必须以 root 权限运行。"
-        exit 1
-    fi
-    
-    # 检查 systemd 是否存在
-    if ! command_exists systemctl; then
-        print_message "$RED" "错误：未检测到 systemd。此脚本专为使用 systemd 的现代 Linux 系统设计。"
-        exit 1
-    fi
-    
-    print_message "$GREEN" "基础环境检查通过。"
+# 检查文件是否有效
+file_valid() {
+    local file="$1"
+    [ -f "$file" ] && [ -s "$file" ] && return 0 || return 1
 }
 
-# 2. 安装依赖项
+# --- 核心功能 ---
+
+# 1. 检查环境
+check_environment() {
+    print_message "$YELLOW" "步骤 1/7: 检查系统环境"
+    [ "$(id -u)" -eq 0 ] || { print_message "$RED" "错误：必须以 root 权限运行"; exit 1; }
+    command_exists systemctl || { print_message "$RED" "错误：未检测到 systemd"; exit 1; }
+    [ -r /dev/urandom ] || { print_message "$RED" "错误：/dev/urandom 不可用"; exit 1; }
+    print_message "$GREEN" "环境检查通过"
+}
+
+# 2. 安装依赖
 install_dependencies() {
-    print_message "$YELLOW" "步骤 2/7: 安装核心依赖项"
-    
+    print_message "$YELLOW" "步骤 2/7: 安装依赖"
+    local pkg_manager=""
     if command_exists apt-get; then
-        print_message "$YELLOW" "检测到 apt 包管理器，正在更新..."
-        if ! apt-get update -y; then
-            print_message "$RED" "apt 更新失败，请检查您的软件源设置。"
-            exit 1
-        fi
-        print_message "$YELLOW" "正在安装: curl, gawk, coreutils..."
-        if ! apt-get install -y curl gawk coreutils; then
-            print_message "$RED" "使用 apt 安装依赖失败。"
-            exit 1
-        fi
+        pkg_manager="apt-get"
+        $pkg_manager update -y || { print_message "$RED" "错误：$pkg_manager 更新失败"; exit 1; }
     elif command_exists dnf; then
-        print_message "$YELLOW" "检测到 dnf 包管理器，正在安装核心依赖..."
-        if ! dnf install -y curl gawk coreutils; then
-            print_message "$RED" "使用 dnf 安装依赖失败。"
-            exit 1
-        fi
+        pkg_manager="dnf"
     elif command_exists yum; then
-        print_message "$YELLOW" "检测到 yum 包管理器，正在安装核心依赖..."
-        if ! yum install -y curl gawk coreutils; then
-            print_message "$RED" "使用 yum 安装依赖失败。"
-            exit 1
-        fi
+        pkg_manager="yum"
     else
-        print_message "$RED" "错误：未找到支持的包管理器 (apt/dnf/yum)。"
+        print_message "$RED" "错误：未找到支持的包管理器 (apt/dnf/yum)"
         exit 1
     fi
-    
-    # 再次检查核心命令，确保安装成功
-    local dependencies=("curl" "gawk" "shuf" "tr" "head")
-    for cmd in "${dependencies[@]}"; do
-        if ! command_exists "$cmd"; then
-            print_message "$RED" "致命错误：依赖 '$cmd' 安装后仍未找到，请检查系统环境。"
-            exit 1
-        fi
+    $pkg_manager install -y curl gawk coreutils || { print_message "$RED" "错误：依赖安装失败"; exit 1; }
+    for cmd in curl gawk shuf tr head; do
+        command_exists "$cmd" || { print_message "$RED" "错误：依赖 $cmd 未安装"; exit 1; }
     done
-
-    print_message "$GREEN" "依赖项安装成功。"
+    print_message "$GREEN" "依赖安装完成"
 }
 
-# 3. 清理旧版本
-cleanup_previous_installation() {
-    print_message "$YELLOW" "步骤 3/7: 清理旧版本安装"
-    
-    if systemctl is-active --quiet hysteria; then
-        print_message "$YELLOW" "检测到正在运行的旧版本，正在停止..."
-        systemctl stop hysteria
-    fi
-    
+# 3. 清理旧安装
+cleanup_old_install() {
+    print_message "$YELLOW" "步骤 3/7: 清理旧安装"
+    systemctl stop hysteria 2>/dev/null || true
     rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
     rm -rf "$INSTALL_DIR"
-    
-    systemctl daemon-reload
-    
-    print_message "$GREEN" "旧版本清理完毕。"
+    systemctl daemon-reload 2>/dev/null || true
+    print_message "$GREEN" "旧安装清理完成"
 }
 
-# 4. 下载并安装 Hysteria
-download_and_install_hysteria() {
-    print_message "$YELLOW" "步骤 4/7: 下载并安装 Hysteria 2"
-    
-    local arch
+# 4. 下载 Hysteria
+download_hysteria() {
+    print_message "$YELLOW" "步骤 4/7: 下载 Hysteria 2"
+    local arch=""
     case $(uname -m) in
         x86_64) arch="amd64" ;;
         aarch64) arch="arm64" ;;
-        *)
-            print_message "$RED" "错误：不支持的 CPU 架构: $(uname -m)"
-            exit 1
-            ;;
+        *) print_message "$RED" "错误：不支持的架构 $(uname -m)"; exit 1 ;;
     esac
-    
-    local download_url
-    download_url=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | grep "browser_download_url.*hysteria-linux-${arch}" | awk -F '"' '{print $4}' | head -n 1)
-    
-    if [ -z "$download_url" ]; then
-        print_message "$RED" "错误：无法从 GitHub API 获取最新的 Hysteria 2 下载链接。"
-        exit 1
-    fi
-    
-    print_message "$YELLOW" "正在从 $download_url 下载..."
-    if ! curl -L -o "$HYSTERIA_BIN" "$download_url"; then
-        print_message "$RED" "错误：下载 Hysteria 2 失败。请检查网络连接或 GitHub API 访问。"
-        exit 1
-    fi
-    
+    local url=$(curl -s --retry 3 --retry-delay 2 "https://api.github.com/repos/apernet/hysteria/releases/latest" | grep "browser_download_url.*hysteria-linux-${arch}" | awk -F '"' '{print $4}' | head -n 1)
+    [ -n "$url" ] || { print_message "$RED" "错误：无法获取 Hysteria 下载链接"; exit 1; }
+    print_message "$YELLOW" "下载 $url ..."
+    curl -Lso "$HYSTERIA_BIN" --retry 3 --retry-delay 2 "$url" || { print_message "$RED" "错误：下载 Hysteria 失败，退出码: $?"; exit 1; }
     chmod +x "$HYSTERIA_BIN"
-    
-    if ! "$HYSTERIA_BIN" -h &>/dev/null; then
-        print_message "$RED" "错误：下载的文件似乎已损坏或无法执行。"
-        exit 1
-    fi
-    
-    print_message "$GREEN" "Hysteria 2 下载并验证成功。版本信息:"
+    "$HYSTERIA_BIN" -h &>/dev/null || { print_message "$RED" "错误：Hysteria 二进制无效"; exit 1; }
+    print_message "$GREEN" "Hysteria 下载完成，版本信息："
     "$HYSTERIA_BIN" version
 }
 
-# 5. 创建配置文件
+# 5. 配置 Hysteria
 configure_hysteria() {
     print_message "$YELLOW" "步骤 5/7: 创建配置文件"
-    
-    mkdir -p "$INSTALL_DIR"
-    
-    local listen_port
-    listen_port=$(shuf -i 10000-65535 -n 1)
-    
-    local obfs_password
-    obfs_password=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
-    
-    # [逻辑修正] 只使用下载方案，如果失败则直接退出
-    print_message "$YELLOW" "正在配置 TLS 证书 (正在下载预制证书)..."
-    local KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
-    local CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
-
-    if ! curl -Lso "$KEY_PATH" "$KEY_URL" || ! curl -Lso "$CERT_PATH" "$CERT_URL"; then
-        print_message "$RED" "致命错误：无法下载预制证书，请检查您的服务器是否能正常访问 GitHub Raw 内容。"
-        print_message "$RED" "安装已停止以避免服务器崩溃。"
-        exit 1
-    fi
-
-    # 检查下载的文件是否有效
-    if ! [ -s "$KEY_PATH" ] || ! [ -s "$CERT_PATH" ]; then
-        print_message "$RED" "致命错误：下载的证书文件为空，可能是网络问题导致。"
-        print_message "$RED" "安装已停止以避免服务器崩溃。"
-        exit 1
-    fi
-    print_message "$GREEN" "成功下载并验证预制证书。"
-
-    print_message "$YELLOW" "正在写入配置文件..."
+    print_message "$YELLOW" "创建安装目录 $INSTALL_DIR ..."
+    mkdir -p "$INSTALL_DIR" || { print_message "$RED" "错误：无法创建目录 $INSTALL_DIR"; exit 1; }
+    chmod 755 "$INSTALL_DIR"
+    [ -w "$INSTALL_DIR" ] || { print_message "$RED" "错误：目录 $INSTALL_DIR 不可写"; exit 1; }
+    local port=$(shuf -i 10000-65535 -n 1)
+    local password=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+    print_message "$YELLOW" "下载证书和密钥..."
+    echo "DEBUG: 下载证书: curl -Lso $CERT_PATH $CERT_URL"
+    curl -Lso "$CERT_PATH" --retry 5 --retry-delay 3 --connect-timeout 10 "$CERT_URL" || { print_message "$RED" "错误：下载证书失败，退出码: $?"; exit 1; }
+    echo "DEBUG: 下载密钥: curl -Lso $KEY_PATH $KEY_URL"
+    curl -Lso "$KEY_PATH" --retry 5 --retry-delay 3 --connect-timeout 10 "$KEY_URL" || { print_message "$RED" "错误：下载密钥失败，退出码: $?"; exit 1; }
+    echo "DEBUG: 验证文件: $CERT_PATH, $KEY_PATH"
+    file_valid "$CERT_PATH" && file_valid "$KEY_PATH" || { print_message "$RED" "错误：下载文件无效，证书: $(ls -l $CERT_PATH), 密钥: $(ls -l $KEY_PATH)"; exit 1; }
+    print_message "$GREEN" "证书和密钥下载成功"
+    print_message "$YELLOW" "生成配置文件 $CONFIG_PATH ..."
     cat > "$CONFIG_PATH" <<EOF
-listen: :${listen_port}
+listen: :${port}
 tls:
   cert: ${CERT_PATH}
   key: ${KEY_PATH}
 obfs:
   type: password
-  password: ${obfs_password}
+  password: ${password}
 EOF
-    
-    export LISTEN_PORT="$listen_port"
-    export OBFS_PASSWORD="$obfs_password"
-    
-    print_message "$GREEN" "配置文件创建成功。"
+    chmod 644 "$CONFIG_PATH"
+    file_valid "$CONFIG_PATH" || { print_message "$RED" "错误：配置文件 $CONFIG_PATH 创建失败"; exit 1; }
+    export LISTEN_PORT="$port"
+    export OBFS_PASSWORD="$password"
+    print_message "$GREEN" "配置文件生成完成"
 }
 
-# 6. 设置 Systemd 服务并启动
-setup_and_start_service() {
-    print_message "$YELLOW" "步骤 6/7: 设置并启动 Systemd 服务"
-    
+# 6. 设置服务
+setup_service() {
+    print_message "$YELLOW" "步骤 6/7: 设置服务"
     cat > "$SERVICE_PATH" <<EOF
 [Unit]
-Description=Hysteria 2 Service (Managed by script)
+Description=Hysteria 2 Service
 After=network.target
-
 [Service]
 Type=simple
 ExecStart=${HYSTERIA_BIN} server -c ${CONFIG_PATH}
@@ -235,111 +163,77 @@ WorkingDirectory=${INSTALL_DIR}
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536
-
 [Install]
 WantedBy=multi-user.target
 EOF
-    
-    systemctl daemon-reload
-    
-    print_message "$YELLOW" "正在启动 Hysteria 2 服务..."
-    if ! systemctl enable --now hysteria; then
-        print_message "$RED" "错误：启动 Hysteria 服务失败。请运行 'journalctl -u hysteria -n 50' 查看详细日志。"
-        exit 1
-    fi
-    
-    print_message "$GREEN" "Systemd 服务创建并启动成功。"
+    systemctl daemon-reload || { print_message "$RED" "错误：systemd 重载失败"; exit 1; }
+    systemctl enable --now hysteria || { print_message "$RED" "错误：服务启动失败，查看日志: journalctl -u hysteria"; exit 1; }
+    print_message "$GREEN" "服务设置完成"
 }
 
-# 7. 最终诊断和输出
-final_diagnostics_and_summary() {
-    print_message "$YELLOW" "步骤 7/7: 最终诊断和输出总结"
-    
-    sleep 2
-    set +e
-    
-    if systemctl is-active --quiet hysteria; then
-        print_message "$GREEN" "诊断成功: Hysteria 服务正在稳定运行。"
-    else
-        print_message "$RED" "诊断失败: Hysteria 服务未能成功启动或已退出。"
-        print_message "$YELLOW" "请使用 'bash $SCRIPT_NAME logs' 命令查看详细错误日志。"
-    fi
-    
-    local server_ip
-    server_ip=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
-    
-    local sni_host="bing.com"
-    local node_tag="Hysteria-Node"
-    local subscription_link="hysteria2://${OBFS_PASSWORD}@${server_ip}:${LISTEN_PORT}?sni=${sni_host}&insecure=1#${node_tag}"
-
-    print_message "$YELLOW" "🎉 部署完成！您的 Hysteria 2 配置信息:"
-    echo -e "${GREEN}服务器地址: ${NC}${server_ip}"
-    echo -e "${GREEN}端口:       ${NC}${LISTEN_PORT}"
-    echo -e "${GREEN}密码:       ${NC}${OBFS_PASSWORD}"
-    echo -e "${GREEN}SNI/主机名: ${NC}${sni_host}"
-    echo -e "${GREEN}跳过证书验证: ${NC}true"
-
-    print_message "$YELLOW" "您的客户端订阅链接 (hysteria2://):"
-    echo "${subscription_link}"
-
-    print_message "$GREEN" "您现在可以使用以下命令来管理 Hysteria 2 服务:"
-    echo -e "${YELLOW}查看状态:   systemctl status hysteria${NC}"
-    echo -e "${YELLOW}重启服务:   systemctl restart hysteria${NC}"
-    echo -e "${YELLOW}停止服务:   systemctl stop hysteria${NC}"
-    echo -e "${YELLOW}查看日志:   bash ${SCRIPT_NAME} logs${NC}"
-    echo -e "${YELLOW}卸载服务:   bash ${SCRIPT_NAME} uninstall${NC}"
+# 7. 总结输出
+print_summary() {
+    print_message "$YELLOW" "步骤 7/7: 部署总结"
+    systemctl is-active --quiet hysteria || { print_message "$RED" "错误：服务未运行，查看日志: journalctl -u hysteria"; exit 1; }
+    local ip=$(curl -s --retry 3 --retry-delay 2 http://checkip.amazonaws.com || curl -s --retry 3 --retry-delay 2 https://api.ipify.org)
+    [ -n "$ip" ] || { print_message "$RED" "错误：无法获取服务器 IP"; exit 1; }
+    local sni="bing.com"
+    local tag="Hysteria-Node"
+    local link="hysteria2://${OBFS_PASSWORD}@${ip}:${LISTEN_PORT}?sni=${sni}&insecure=1#${tag}"
+    print_message "$GREEN" "部署成功！配置信息："
+    echo -e "服务器地址: ${ip}"
+    echo -e "端口: ${LISTEN_PORT}"
+    echo -e "密码: ${OBFS_PASSWORD}"
+    echo -e "SNI: ${sni}"
+    echo -e "跳过证书验证: true"
+    echo -e "\n订阅链接: ${link}"
+    print_message "$GREEN" "管理命令："
+    echo "状态: systemctl status hysteria"
+    echo "重启: systemctl restart hysteria"
+    echo "停止: systemctl stop hysteria"
+    echo "日志: bash ${SCRIPT_NAME} logs"
+    echo "卸载: bash ${SCRIPT_NAME} uninstall"
 }
 
-# --- 卸载和日志的独立入口 ---
-handle_arguments() {
-    if [ "$#" -gt 0 ]; then
-        case "$1" in
-            uninstall|del|remove)
-                print_message "$YELLOW" "正在卸载 Hysteria 2..."
-                if ! command_exists systemctl; then
-                    pkill -f "$HYSTERIA_BIN" || true
-                else
-                    systemctl stop hysteria || true
-                    systemctl disable hysteria || true
-                    rm -f "$SERVICE_PATH"
-                    systemctl daemon-reload
-                fi
-                rm -f "$HYSTERIA_BIN"
-                rm -rf "$INSTALL_DIR"
-                print_message "$GREEN" "Hysteria 2 卸载完成。"
-                exit 0
-                ;;
-            log|logs)
-                print_message "$YELLOW" "正在显示 Hysteria 2 日志 (最近50行)..."
-                if ! command_exists journalctl; then
-                    print_message "$RED" "错误：未找到 systemd 日志工具 (journalctl)。"
-                else
-                    journalctl -u hysteria -n 50 --no-pager
-                fi
-                exit 0
-                ;;
-            *)
-                print_message "$RED" "未知参数: $1. 可用参数: uninstall, logs"
-                exit 1
-                ;;
-        esac
-    fi
+# --- 其他功能 ---
+
+# 处理参数
+handle_args() {
+    [ $# -eq 0 ] && return 0
+    case "$1" in
+        uninstall|del|remove)
+            print_message "$YELLOW" "卸载 Hysteria 2..."
+            systemctl stop hysteria 2>/dev/null || true
+            systemctl disable hysteria 2>/dev/null || true
+            rm -f "$SERVICE_PATH" "$HYSTERIA_BIN"
+            rm -rf "$INSTALL_DIR"
+            systemctl daemon-reload 2>/dev/null || true
+            print_message "$GREEN" "卸载完成"
+            exit 0
+            ;;
+        log|logs)
+            print_message "$YELLOW" "查看日志..."
+            command_exists journalctl && journalctl -u hysteria -n 50 --no-pager || print_message "$RED" "错误：未找到 journalctl"
+            exit 0
+            ;;
+        *)
+            print_message "$RED" "错误：未知参数 $1 (支持: uninstall, logs)"
+            exit 1
+            ;;
+    esac
 }
 
 # --- 主函数 ---
 main() {
-    handle_arguments "$@"
-    
-    trap 'echo -e "\n${RED}脚本因错误或用户中断而退出。${NC}\n"' ERR INT
-    
-    check_base_environment
+    handle_args "$@"
+    trap 'print_message "$RED" "脚本中断或错误退出，请检查日志: journalctl -xe"' ERR INT
+    check_environment
     install_dependencies
-    cleanup_previous_installation
-    download_and_install_hysteria
+    cleanup_old_install
+    download_hysteria
     configure_hysteria
-    setup_and_start_service
-    final_diagnostics_and_summary
+    setup_service
+    print_summary
 }
 
-# --- 脚本启动 ---
 main "$@"
