@@ -1,9 +1,12 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v5 - Debug Edition)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v6 - Fixed Edition)
 #
 # 特点:
+# - 已修正 Hysteria 2 的兼容性问题。
+# - 使用 openssl 生成证书，替代已被移除的 `hysteria cert` 命令。
+# - 生成 Hysteria 2 的正确配置文件格式。
 # - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
 # - 在关键步骤增加明确的输出信息。
 # - 脚本结束时自动运行诊断命令，收集所有必要信息。
@@ -55,15 +58,15 @@ main() {
     print_message "$GREEN" "旧文件清理完毕。"
 
     # 2. 安装依赖
-    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2)..."
+    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl)..."
     if command -v apt-get &>/dev/null; then
-        apt-get update && apt-get install -y curl jq iproute2
+        apt-get update && apt-get install -y curl jq iproute2 openssl
     elif command -v yum &>/dev/null; then
-        yum install -y curl jq iproute
+        yum install -y curl jq iproute openssl
     elif command -v dnf &>/dev/null; then
-        dnf install -y curl jq iproute
+        dnf install -y curl jq iproute openssl
     else
-        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq' 和 'iproute2'。"
+        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq', 'iproute2', 'openssl'。"
         exit 1
     fi
     print_message "$GREEN" "依赖安装完毕。"
@@ -109,20 +112,30 @@ main() {
     OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16) # 随机生成密码
     
     mkdir -p /etc/hysteria
-    print_message "$YELLOW" "正在生成自签名证书..."
-    $HYSTERIA_BIN cert --self-signed --host "$SERVER_IP" --out "$CERT_PATH" --key "$KEY_PATH"
+
+    # --- FIX START: 使用 openssl 替代旧的 cert 命令 ---
+    print_message "$YELLOW" "正在使用 openssl 生成自签名证书..."
+    openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650
+    # --- FIX END ---
     
+    # --- FIX START: 使用 Hysteria 2 的正确配置格式 ---
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
-server:
-  listen: :$LISTEN_PORT
-  tls:
-    cert: $CERT_PATH
-    key: $KEY_PATH
-auth:
+# 监听端口
+listen: :$LISTEN_PORT
+
+# TLS 证书配置
+tls:
+  cert: $CERT_PATH
+  key: $KEY_PATH
+
+# 混淆密码
+obfs:
   type: password
   password: $OBFS_PASSWORD
 EOF
+    # --- FIX END ---
+    
     print_message "$GREEN" "配置完成。端口: $LISTEN_PORT, 密码: $OBFS_PASSWORD"
 
     # 6. 设置 Systemd 服务
@@ -133,7 +146,7 @@ Description=Hysteria 2 Service
 After=network.target
 [Service]
 Type=simple
-ExecStart=$HYSTERIA_BIN server --config $CONFIG_PATH
+ExecStart=$HYSTERIA_BIN server -c $CONFIG_PATH
 WorkingDirectory=/etc/hysteria
 Restart=on-failure
 RestartSec=10
@@ -175,6 +188,24 @@ EOF
     ss -ulpn | grep ":$LISTEN_PORT" || print_message "$RED" "未发现程序在监听端口 $LISTEN_PORT"
     
     print_message "$GREEN" "所有诊断步骤已完成。"
+    
+    # 输出客户端配置
+    CLIENT_JSON=$(cat <<EOF
+{
+  "server": "$SERVER_IP:$LISTEN_PORT",
+  "obfs": {
+    "type": "password",
+    "password": "$OBFS_PASSWORD"
+  },
+  "tls": {
+    "insecure": true,
+    "sni": "bing.com"
+  }
+}
+EOF
+)
+    print_message "$YELLOW" "您的客户端配置 (JSON格式):"
+    echo "$CLIENT_JSON"
 }
 
 # --- 运行主函数 ---
