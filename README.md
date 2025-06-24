@@ -91,42 +91,32 @@ chmod \+x deploy.sh
 
 此模式利用Docker实现了环境的完全隔离和无可比拟的可移植性，是现代运维和持续集成/持续部署(CI/CD)的最佳实践。
 
-#### **✅ 前提条件**
-* 一键安装docker bash <(curl -fsSL https://get.docker.com)
+第二步：检查服务器环境（首次部署需要）
+检查 Docker 是否安装：
+在服务器的命令行中输入 docker --version。如果能看到版本号，说明已安装。如果没有，请用以下一键脚本进行安装：
 
-* 服务器上已正确安装 Docker 和 Docker Compose。
+Bash
 
-#### **🛠️ 操作流程**
+curl -fsSL https://get.docker.com | bash
+检查防火墙和安全组：
+这是最容易被忽略但最关键的一步。请确保服务器的防火墙（如 ufw）和您云服务商（如阿里云、腾讯云、AWS）控制台里的“安全组”规则，已经为您计划使用的端口（比如 443）同时开放了 TCP 和 UDP 流量。
 
-1. **克隆本项目**  
-   git clone \[本GitHub仓库的SSH或HTTPS地址\]
+以 ufw 防火墙为例，开放 443 端口的命令是：
 
-2. **进入Docker工作目录**  
-   cd hysteria-deployment-suite/docker
+Bash
 
-3. **准备配置文件 (关键步骤)**  
-   * 首先，将配置文件模板复制一份：
+sudo ufw allow 443/tcp
+sudo ufw allow 443/udp
+sudo ufw reload
+第三步：执行“一键部署”命令
+现在，请在您的服务器终端上，运行我们精心打造的、最终的单行部署命令。
 
-   cp config/config.yaml.example config/config.yaml
+请务必将 YOUR_DOCKERHUB_USERNAME 替换为您的真实用户名，并设置一个足够强的密码。
 
-   * 然后，**必须**用您喜欢的编辑器打开并修改 config/config.yaml 文件，**将里面的密码 PLEASE\_CHANGE\_ME\_IN\_CONFIG.YAML 替换为您自己的强密码**。  
-4. **生成证书**  
-   * 如果您没有自己的域名证书，请运行以下命令生成一套自签名证书。证书和密钥将自动存放在config目录下，并被docker-compose挂载到容器中。
+Bash
 
-openssl req \-x509 \-nodes \-newkey ec:\<(openssl ecparam \-name prime256v1) \-keyout config/server.key \-out config/server.crt \-subj "/CN=bing.com" \-days 3650
+docker run -d --name stormgate --restart always --cap-add=NET_ADMIN -p 443:443/udp -p 443:443/tcp -v /root/stormgate_config:/etc/hysteria -e PASSWORD="请设置一个真实的、超强的密码" -e MASQUERADE_URL="https://www.bing.com/" YOUR_DOCKERHUB_USERNAME/stormgate:2.0
 
-5. **一键启动服务**  
-   * 在docker目录下，执行以下命令即可在后台启动Hysteria 2服务：
-
-docker-compose up \-d
-
-#### **常用Docker命令**
-
-* **查看服务状态:** docker-compose ps  
-* **实时查看日志:** docker-compose logs \-f  
-* **停止并移除容器:** docker-compose down  
-* **仅停止服务:** docker-compose stop  
-* **重启服务:** docker-compose restart
 
 ## **项目结构**
 
