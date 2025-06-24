@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 标准一键部署脚本 (v23 - 含备用证书)
+# Hysteria 2 标准一键部署脚本 (v24 - 依赖项修正)
 #
 # 特点:
+# - [修正] 修正了 Debian/Ubuntu 系统下 awk 依赖包的名称。
 # - [新] 专为标准服务器环境 (>=512MB 内存) 设计，性能更稳定。
 # - [新] 使用 systemd 管理服务，更专业、更可靠。
 # - [核心] 当本地证书生成失败时，会自动下载预制证书作为后备方案。
@@ -90,13 +91,14 @@ fi
 print_message "$YELLOW" "步骤 2: 安装依赖..."
 if command -v apt-get &>/dev/null; then
     apt-get update
-    apt-get install -y curl coreutils openssl awk
+    # FIX: On Debian/Ubuntu, 'awk' is a virtual package, 'gawk' is the provider.
+    apt-get install -y curl coreutils openssl gawk
 elif command -v yum &>/dev/null; then
     yum install -y curl coreutils openssl gawk
 elif command -v dnf &>/dev/null; then
     dnf install -y curl coreutils openssl gawk
 else
-    print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'coreutils', 'openssl', 'awk'。"
+    print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'coreutils', 'openssl', 'gawk'。"
     exit 1
 fi
 print_message "$GREEN" "依赖安装成功。"
