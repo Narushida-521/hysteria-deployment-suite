@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 专业部署脚本 (v32 - 下载优先最终版)
+# Hysteria 2 专业部署脚本 (v34 - 安全最终版)
 # 作者: Gemini
 #
 # 特点:
-# - [最终修正] 采用“下载优先”策略，首先尝试下载预制证书，最大限度避免内存峰值。
+# - [最终修正] 彻底移除高风险的本地证书生成方案，只保留最稳定的下载方案。
+# - [安全至上] 如果预制证书下载失败，脚本将明确报错并安全退出，绝不导致服务器崩溃。
 # - [重构] 全新代码结构，模块化、功能化，清晰易懂。
 # - [健壮] 采用严格的错误处理机制 (set -euo pipefail) 和详细的步骤检查。
 # - [标准] 专为标准 Linux 环境 (>=512MB 内存, systemd) 设计，稳定可靠。
@@ -53,7 +54,7 @@ command_exists() {
 
 # 1. 检查基础环境
 check_base_environment() {
-    print_message "$YELLOW" "步骤 1/8: 检查基础环境"
+    print_message "$YELLOW" "步骤 1/7: 检查基础环境"
     
     # 检查是否为 root 用户
     if [ "$(id -u)" -ne 0 ]; then
@@ -72,7 +73,7 @@ check_base_environment() {
 
 # 2. 安装依赖项
 install_dependencies() {
-    print_message "$YELLOW" "步骤 2/8: 安装核心依赖项"
+    print_message "$YELLOW" "步骤 2/7: 安装核心依赖项"
     
     if command_exists apt-get; then
         print_message "$YELLOW" "检测到 apt 包管理器，正在更新..."
@@ -80,20 +81,20 @@ install_dependencies() {
             print_message "$RED" "apt 更新失败，请检查您的软件源设置。"
             exit 1
         fi
-        print_message "$YELLOW" "正在安装: curl, openssl, gawk, coreutils..."
-        if ! apt-get install -y curl openssl gawk coreutils; then
+        print_message "$YELLOW" "正在安装: curl, gawk, coreutils..."
+        if ! apt-get install -y curl gawk coreutils; then
             print_message "$RED" "使用 apt 安装依赖失败。"
             exit 1
         fi
     elif command_exists dnf; then
         print_message "$YELLOW" "检测到 dnf 包管理器，正在安装核心依赖..."
-        if ! dnf install -y curl openssl gawk coreutils; then
+        if ! dnf install -y curl gawk coreutils; then
             print_message "$RED" "使用 dnf 安装依赖失败。"
             exit 1
         fi
     elif command_exists yum; then
         print_message "$YELLOW" "检测到 yum 包管理器，正在安装核心依赖..."
-        if ! yum install -y curl openssl gawk coreutils; then
+        if ! yum install -y curl gawk coreutils; then
             print_message "$RED" "使用 yum 安装依赖失败。"
             exit 1
         fi
@@ -103,7 +104,7 @@ install_dependencies() {
     fi
     
     # 再次检查核心命令，确保安装成功
-    local dependencies=("curl" "openssl" "gawk" "shuf" "tr" "head")
+    local dependencies=("curl" "gawk" "shuf" "tr" "head")
     for cmd in "${dependencies[@]}"; do
         if ! command_exists "$cmd"; then
             print_message "$RED" "致命错误：依赖 '$cmd' 安装后仍未找到，请检查系统环境。"
@@ -116,7 +117,7 @@ install_dependencies() {
 
 # 3. 清理旧版本
 cleanup_previous_installation() {
-    print_message "$YELLOW" "步骤 3/8: 清理旧版本安装"
+    print_message "$YELLOW" "步骤 3/7: 清理旧版本安装"
     
     if systemctl is-active --quiet hysteria; then
         print_message "$YELLOW" "检测到正在运行的旧版本，正在停止..."
@@ -133,7 +134,7 @@ cleanup_previous_installation() {
 
 # 4. 下载并安装 Hysteria
 download_and_install_hysteria() {
-    print_message "$YELLOW" "步骤 4/8: 下载并安装 Hysteria 2"
+    print_message "$YELLOW" "步骤 4/7: 下载并安装 Hysteria 2"
     
     local arch
     case $(uname -m) in
@@ -172,7 +173,7 @@ download_and_install_hysteria() {
 
 # 5. 创建配置文件
 configure_hysteria() {
-    print_message "$YELLOW" "步骤 5/8: 创建配置文件"
+    print_message "$YELLOW" "步骤 5/7: 创建配置文件"
     
     mkdir -p "$INSTALL_DIR"
     
@@ -182,22 +183,25 @@ configure_hysteria() {
     local obfs_password
     obfs_password=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
     
-    # [逻辑修正] 优先下载预制证书，失败后再尝试本地生成
-    print_message "$YELLOW" "正在配置 TLS 证书 (优先使用下载方案)..."
+    # [逻辑修正] 只使用下载方案，如果失败则直接退出
+    print_message "$YELLOW" "正在配置 TLS 证书 (正在下载预制证书)..."
     local KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
     local CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
 
-    if curl -Lso "$KEY_PATH" "$KEY_URL" && curl -Lso "$CERT_PATH" "$CERT_URL"; then
-        print_message "$GREEN" "成功下载预制证书。"
-    else
-        print_message "$YELLOW" "下载预制证书失败！正在启动备用方案：本地生成证书..."
-        if command_exists openssl && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
-            print_message "$GREEN" "成功使用 openssl 生成了新证书。"
-        else
-            print_message "$RED" "致命错误：下载和本地生成证书均失败，安装无法继续。"; exit 1
-        fi
+    if ! curl -Lso "$KEY_PATH" "$KEY_URL" || ! curl -Lso "$CERT_PATH" "$CERT_URL"; then
+        print_message "$RED" "致命错误：无法下载预制证书，请检查您的服务器是否能正常访问 GitHub Raw 内容。"
+        print_message "$RED" "安装已停止以避免服务器崩溃。"
+        exit 1
     fi
-    
+
+    # 检查下载的文件是否有效
+    if ! [ -s "$KEY_PATH" ] || ! [ -s "$CERT_PATH" ]; then
+        print_message "$RED" "致命错误：下载的证书文件为空，可能是网络问题导致。"
+        print_message "$RED" "安装已停止以避免服务器崩溃。"
+        exit 1
+    fi
+    print_message "$GREEN" "成功下载并验证预制证书。"
+
     print_message "$YELLOW" "正在写入配置文件..."
     cat > "$CONFIG_PATH" <<EOF
 listen: :${listen_port}
@@ -215,9 +219,9 @@ EOF
     print_message "$GREEN" "配置文件创建成功。"
 }
 
-# 6. 设置 Systemd 服务
-setup_systemd_service() {
-    print_message "$YELLOW" "步骤 6/8: 设置 Systemd 服务"
+# 6. 设置 Systemd 服务并启动
+setup_and_start_service() {
+    print_message "$YELLOW" "步骤 6/7: 设置并启动 Systemd 服务"
     
     cat > "$SERVICE_PATH" <<EOF
 [Unit]
@@ -237,12 +241,6 @@ WantedBy=multi-user.target
 EOF
     
     systemctl daemon-reload
-    print_message "$GREEN" "Systemd 服务文件创建成功。"
-}
-
-# 7. 启动服务并配置防火墙
-start_service_and_configure_firewall() {
-    print_message "$YELLOW" "步骤 7/8: 启动服务并配置防火墙"
     
     print_message "$YELLOW" "正在启动 Hysteria 2 服务..."
     if ! systemctl enable --now hysteria; then
@@ -250,22 +248,12 @@ start_service_and_configure_firewall() {
         exit 1
     fi
     
-    print_message "$YELLOW" "正在配置防火墙..."
-    if command_exists firewall-cmd; then
-        firewall-cmd --permanent --add-port="${LISTEN_PORT}/udp"
-        firewall-cmd --reload
-    elif command_exists ufw; then
-        ufw allow "${LISTEN_PORT}/udp"
-    else
-        print_message "$YELLOW" "警告: 未检测到 firewalld 或 ufw，请手动开放 UDP 端口 ${LISTEN_PORT}。"
-    fi
-    
-    print_message "$GREEN" "服务启动并配置防火墙完毕。"
+    print_message "$GREEN" "Systemd 服务创建并启动成功。"
 }
 
-# 8. 最终诊断和输出
+# 7. 最终诊断和输出
 final_diagnostics_and_summary() {
-    print_message "$YELLOW" "步骤 8/8: 最终诊断和输出总结"
+    print_message "$YELLOW" "步骤 7/7: 最终诊断和输出总结"
     
     sleep 2
     set +e
@@ -349,8 +337,7 @@ main() {
     cleanup_previous_installation
     download_and_install_hysteria
     configure_hysteria
-    setup_systemd_service
-    start_service_and_configure_firewall
+    setup_and_start_service
     final_diagnostics_and_summary
 }
 
