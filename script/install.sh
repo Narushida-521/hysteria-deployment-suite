@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 专业部署脚本 (v29 - 依赖项彻底修正)
+# Hysteria 2 专业部署脚本 (v30 - 逻辑修正版)
 # 作者: Gemini
 #
 # 特点:
-# - [彻底修正] 从安装和检查流程中完全移除了错误的 'coreutils' 包名。
+# - [彻底修正] 修正了“先检查后安装”的逻辑错误，现在会先尝试安装依赖。
 # - [重构] 全新代码结构，模块化、功能化，清晰易懂。
 # - [健壮] 采用严格的错误处理机制 (set -euo pipefail) 和详细的步骤检查。
 # - [标准] 专为标准 Linux 环境 (>=512MB 内存, systemd) 设计，稳定可靠。
@@ -51,9 +51,9 @@ command_exists() {
 
 # --- 核心功能函数 ---
 
-# 1. 检查运行环境
-check_environment() {
-    print_message "$YELLOW" "步骤 1/8: 检查运行环境"
+# 1. 检查基础环境
+check_base_environment() {
+    print_message "$YELLOW" "步骤 1/8: 检查基础环境"
     
     # 检查是否为 root 用户
     if [ "$(id -u)" -ne 0 ]; then
@@ -66,48 +66,34 @@ check_environment() {
         print_message "$RED" "错误：未检测到 systemd。此脚本专为使用 systemd 的现代 Linux 系统设计。"
         exit 1
     fi
-
-    # 检查所需的核心工具
-    local dependencies=("curl" "openssl" "gawk" "shuf" "tr" "head")
-    for cmd in "${dependencies[@]}"; do
-        if ! command_exists "$cmd"; then
-            print_message "$RED" "错误：核心命令 '$cmd' 不存在。请先手动安装它。"
-            exit 1
-        fi
-    done
     
-    print_message "$GREEN" "环境检查通过。"
+    print_message "$GREEN" "基础环境检查通过。"
 }
 
 # 2. 安装依赖项
 install_dependencies() {
-    print_message "$YELLOW" "步骤 2/8: 安装依赖项"
+    print_message "$YELLOW" "步骤 2/8: 安装核心依赖项"
     
-    local pkg_manager
     if command_exists apt-get; then
-        pkg_manager="apt-get"
         print_message "$YELLOW" "检测到 apt 包管理器，正在更新..."
         if ! apt-get update -y; then
             print_message "$RED" "apt 更新失败，请检查您的软件源设置。"
             exit 1
         fi
-        print_message "$YELLOW" "正在安装核心依赖..."
-        # [彻底修正] 移除对 'coreutils' 包的安装尝试，因为它是基础包且名称不统一。
-        if ! apt-get install -y curl openssl gawk; then
+        print_message "$YELLOW" "正在安装: curl, openssl, gawk, coreutils..."
+        if ! apt-get install -y curl openssl gawk coreutils; then
             print_message "$RED" "使用 apt 安装依赖失败。"
             exit 1
         fi
     elif command_exists dnf; then
-        pkg_manager="dnf"
         print_message "$YELLOW" "检测到 dnf 包管理器，正在安装核心依赖..."
-        if ! dnf install -y curl openssl gawk; then
+        if ! dnf install -y curl openssl gawk coreutils; then
             print_message "$RED" "使用 dnf 安装依赖失败。"
             exit 1
         fi
     elif command_exists yum; then
-        pkg_manager="yum"
         print_message "$YELLOW" "检测到 yum 包管理器，正在安装核心依赖..."
-        if ! yum install -y curl openssl gawk; then
+        if ! yum install -y curl openssl gawk coreutils; then
             print_message "$RED" "使用 yum 安装依赖失败。"
             exit 1
         fi
@@ -116,6 +102,15 @@ install_dependencies() {
         exit 1
     fi
     
+    # 再次检查核心命令，确保安装成功
+    local dependencies=("curl" "openssl" "gawk" "shuf" "tr" "head")
+    for cmd in "${dependencies[@]}"; do
+        if ! command_exists "$cmd"; then
+            print_message "$RED" "致命错误：依赖 '$cmd' 安装后仍未找到，请检查系统环境。"
+            exit 1
+        fi
+    done
+
     print_message "$GREEN" "依赖项安装成功。"
 }
 
@@ -131,7 +126,6 @@ cleanup_previous_installation() {
     rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
     rm -rf "$INSTALL_DIR"
     
-    # 重新加载 systemd 配置，确保旧的服务文件被清除
     systemctl daemon-reload
     
     print_message "$GREEN" "旧版本清理完毕。"
@@ -151,7 +145,6 @@ download_and_install_hysteria() {
             ;;
     esac
     
-    # 使用更健壮的方式获取下载链接
     local download_url
     download_url=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | grep "browser_download_url.*hysteria-linux-${arch}" | awk -F '"' '{print $4}' | head -n 1)
     
@@ -168,7 +161,6 @@ download_and_install_hysteria() {
     
     chmod +x "$HYSTERIA_BIN"
     
-    # 验证下载的文件
     if ! "$HYSTERIA_BIN" -h &>/dev/null; then
         print_message "$RED" "错误：下载的文件似乎已损坏或无法执行。"
         exit 1
@@ -192,8 +184,15 @@ configure_hysteria() {
     
     print_message "$YELLOW" "正在生成自签名 TLS 证书..."
     if ! openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
-        print_message "$RED" "错误：使用 openssl 生成证书失败。"
-        exit 1
+        print_message "$YELLOW" "本地证书生成失败！正在启动备用方案：下载预制证书..."
+        local KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
+        local CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
+        if ! curl -Lso "$KEY_PATH" "$KEY_URL" || ! curl -Lso "$CERT_PATH" "$CERT_URL"; then
+            print_message "$RED" "致命错误：备用证书下载失败，安装无法继续。"; exit 1
+        fi
+        print_message "$GREEN" "备用证书下载成功。"
+    else
+        print_message "$GREEN" "成功使用 openssl 生成了新证书。"
     fi
     
     print_message "$YELLOW" "正在写入配置文件..."
@@ -207,7 +206,6 @@ obfs:
   password: ${obfs_password}
 EOF
     
-    # 将配置信息保存为全局变量，以便后续函数使用
     export LISTEN_PORT="$listen_port"
     export OBFS_PASSWORD="$obfs_password"
     
@@ -266,9 +264,7 @@ start_service_and_configure_firewall() {
 final_diagnostics_and_summary() {
     print_message "$YELLOW" "步骤 8/8: 最终诊断和输出总结"
     
-    sleep 2 # 等待服务稳定
-    
-    # 临时禁用 exit on error 以便打印所有信息
+    sleep 2
     set +e
     
     if systemctl is-active --quiet hysteria; then
@@ -325,11 +321,7 @@ handle_arguments() {
             log|logs)
                 print_message "$YELLOW" "正在显示 Hysteria 2 日志 (最近50行)..."
                 if ! command_exists journalctl; then
-                    if [ -f "/tmp/hysteria.log" ]; then
-                         tail -n 50 /tmp/hysteria.log
-                    else
-                         print_message "$RED" "错误：未找到 systemd 日志工具 (journalctl)，也未找到旧版日志文件。"
-                    fi
+                    print_message "$RED" "错误：未找到 systemd 日志工具 (journalctl)。"
                 else
                     journalctl -u hysteria -n 50 --no-pager
                 fi
@@ -347,10 +339,9 @@ handle_arguments() {
 main() {
     handle_arguments "$@"
     
-    # 捕获退出信号，用于清理
     trap 'echo -e "\n${RED}脚本因错误或用户中断而退出。${NC}\n"' ERR INT
     
-    check_environment
+    check_base_environment
     install_dependencies
     cleanup_previous_installation
     download_and_install_hysteria
