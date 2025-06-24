@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v11 - Final Link Format Fix)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v12 - Compatibility Fix)
 #
 # 特点:
 # - 已修正 Hysteria 2 的兼容性问题。
-# - 使用 openssl 生成证书。
+# - 使用更兼容的 openssl 命令生成证书，避免潜在的 shell 问题。
 # - 生成 Hysteria 2 的正确配置文件格式。
 # - 脚本结束时自动生成清晰的配置详情和【最终正确格式】的订阅链接。
 # - 在最终诊断阶段禁用 "exit on error"，确保配置信息和链接总是能显示。
@@ -110,11 +110,28 @@ main() {
     print_message "$YELLOW" "开始配置 Hysteria 2..."
     LISTEN_PORT=35888 # 使用一个固定的端口进行测试，避免随机性问题
     OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16) # 随机生成密码
+    if [ -z "$OBFS_PASSWORD" ]; then
+        print_message "$RED" "错误: 无法生成随机密码。"
+        exit 1
+    fi
     
     mkdir -p /etc/hysteria
 
+    # --- FIX START: 使用更兼容的方式生成证书，避免 bash-specific 特性 ---
     print_message "$YELLOW" "正在使用 openssl 生成自签名证书..."
-    openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650
+    ECPARAM_PATH=$(mktemp)
+    if ! openssl ecparam -name prime256v1 -out "$ECPARAM_PATH"; then
+        print_message "$RED" "错误：无法创建 EC 参数文件。"
+        rm -f "$ECPARAM_PATH"
+        exit 1
+    fi
+    if ! openssl req -x509 -nodes -newkey ec:"$ECPARAM_PATH" -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
+        print_message "$RED" "错误：无法生成自签名证书。"
+        rm -f "$ECPARAM_PATH"
+        exit 1
+    fi
+    rm -f "$ECPARAM_PATH"
+    # --- FIX END ---
     
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
@@ -192,7 +209,7 @@ EOF
     
     print_message "$GREEN" "所有诊断步骤已完成。"
     
-    # --- FIX START: 生成最终正确格式的 hysteria2:// 订阅链接 ---
+    # 生成最终正确格式的 hysteria2:// 订阅链接
     SNI_HOST="bing.com"
     NODE_TAG="Hysteria-Node" # 定义一个默认的节点名称
     SUBSCRIPTION_LINK="hysteria2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1#${NODE_TAG}"
@@ -206,7 +223,6 @@ EOF
 
     print_message "$YELLOW" "您的客户端订阅链接 (hysteria2://):"
     echo "$SUBSCRIPTION_LINK"
-    # --- FIX END ---
 }
 
 # --- 运行主函数 ---
