@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v6 - Fixed Edition)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v8 - Optimized Output)
 #
 # 特点:
 # - 已修正 Hysteria 2 的兼容性问题。
 # - 使用 openssl 生成证书，替代已被移除的 `hysteria cert` 命令。
 # - 生成 Hysteria 2 的正确配置文件格式。
+# - 脚本结束时自动生成清晰的配置详情和订阅链接。
 # - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
 # - 在关键步骤增加明确的输出信息。
 # - 脚本结束时自动运行诊断命令，收集所有必要信息。
@@ -58,15 +59,15 @@ main() {
     print_message "$GREEN" "旧文件清理完毕。"
 
     # 2. 安装依赖
-    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl)..."
+    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl, coreutils)..."
     if command -v apt-get &>/dev/null; then
-        apt-get update && apt-get install -y curl jq iproute2 openssl
+        apt-get update && apt-get install -y curl jq iproute2 openssl coreutils
     elif command -v yum &>/dev/null; then
-        yum install -y curl jq iproute openssl
+        yum install -y curl jq iproute openssl coreutils
     elif command -v dnf &>/dev/null; then
-        dnf install -y curl jq iproute openssl
+        dnf install -y curl jq iproute openssl coreutils
     else
-        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq', 'iproute2', 'openssl'。"
+        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq', 'iproute2', 'openssl', 'coreutils'。"
         exit 1
     fi
     print_message "$GREEN" "依赖安装完毕。"
@@ -113,12 +114,11 @@ main() {
     
     mkdir -p /etc/hysteria
 
-    # --- FIX START: 使用 openssl 替代旧的 cert 命令 ---
+    # --- 使用 openssl 替代旧的 cert 命令 ---
     print_message "$YELLOW" "正在使用 openssl 生成自签名证书..."
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650
-    # --- FIX END ---
     
-    # --- FIX START: 使用 Hysteria 2 的正确配置格式 ---
+    # --- 使用 Hysteria 2 的正确配置格式 ---
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
 # 监听端口
@@ -134,9 +134,8 @@ obfs:
   type: password
   password: $OBFS_PASSWORD
 EOF
-    # --- FIX END ---
     
-    print_message "$GREEN" "配置完成。端口: $LISTEN_PORT, 密码: $OBFS_PASSWORD"
+    print_message "$GREEN" "配置完成。"
 
     # 6. 设置 Systemd 服务
     print_message "$YELLOW" "正在设置 Systemd 服务..."
@@ -189,7 +188,7 @@ EOF
     
     print_message "$GREEN" "所有诊断步骤已完成。"
     
-    # 输出客户端配置
+    # --- FIX START: 输出详细配置信息和订阅链接 ---
     CLIENT_JSON=$(cat <<EOF
 {
   "server": "$SERVER_IP:$LISTEN_PORT",
@@ -204,8 +203,19 @@ EOF
 }
 EOF
 )
-    print_message "$YELLOW" "您的客户端配置 (JSON格式):"
-    echo "$CLIENT_JSON"
+    BASE64_CONFIG=$(echo "$CLIENT_JSON" | base64 -w 0)
+    SUBSCRIPTION_LINK="hy2://${BASE64_CONFIG}"
+
+    print_message "$YELLOW" "您的 Hysteria 2 配置信息:"
+    echo -e "${GREEN}服务器地址: ${NC}$SERVER_IP"
+    echo -e "${GREEN}端口:       ${NC}$LISTEN_PORT"
+    echo -e "${GREEN}密码:       ${NC}$OBFS_PASSWORD"
+    echo -e "${GREEN}SNI/主机名: ${NC}bing.com"
+    echo -e "${GREEN}跳过证书验证: ${NC}true"
+
+    print_message "$YELLOW" "您的客户端订阅链接 (hy2://):"
+    echo "$SUBSCRIPTION_LINK"
+    # --- FIX END ---
 }
 
 # --- 运行主函数 ---
