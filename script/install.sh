@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 专业部署脚本 (v31 - 逻辑修正终版)
+# Hysteria 2 专业部署脚本 (v32 - 下载优先最终版)
 # 作者: Gemini
 #
 # 特点:
-# - [彻底修正] 修正了“先检查后安装”的逻辑错误，现在会先尝试安装依赖。
+# - [最终修正] 采用“下载优先”策略，首先尝试下载预制证书，最大限度避免内存峰值。
 # - [重构] 全新代码结构，模块化、功能化，清晰易懂。
 # - [健壮] 采用严格的错误处理机制 (set -euo pipefail) 和详细的步骤检查。
 # - [标准] 专为标准 Linux 环境 (>=512MB 内存, systemd) 设计，稳定可靠。
@@ -182,17 +182,20 @@ configure_hysteria() {
     local obfs_password
     obfs_password=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
     
-    print_message "$YELLOW" "正在生成自签名 TLS 证书..."
-    if ! openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
-        print_message "$YELLOW" "本地证书生成失败！正在启动备用方案：下载预制证书..."
-        local KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
-        local CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
-        if ! curl -Lso "$KEY_PATH" "$KEY_URL" || ! curl -Lso "$CERT_PATH" "$CERT_URL"; then
-            print_message "$RED" "致命错误：备用证书下载失败，安装无法继续。"; exit 1
-        fi
-        print_message "$GREEN" "备用证书下载成功。"
+    # [逻辑修正] 优先下载预制证书，失败后再尝试本地生成
+    print_message "$YELLOW" "正在配置 TLS 证书 (优先使用下载方案)..."
+    local KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
+    local CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
+
+    if curl -Lso "$KEY_PATH" "$KEY_URL" && curl -Lso "$CERT_PATH" "$CERT_URL"; then
+        print_message "$GREEN" "成功下载预制证书。"
     else
-        print_message "$GREEN" "成功使用 openssl 生成了新证书。"
+        print_message "$YELLOW" "下载预制证书失败！正在启动备用方案：本地生成证书..."
+        if command_exists openssl && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
+            print_message "$GREEN" "成功使用 openssl 生成了新证书。"
+        else
+            print_message "$RED" "致命错误：下载和本地生成证书均失败，安装无法继续。"; exit 1
+        fi
     fi
     
     print_message "$YELLOW" "正在写入配置文件..."
