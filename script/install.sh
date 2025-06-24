@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v12 - Compatibility Fix)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v13 - Minimalist Env Fix)
 #
 # 特点:
-# - 已修正 Hysteria 2 的兼容性问题。
-# - 使用更兼容的 openssl 命令生成证书，避免潜在的 shell 问题。
-# - 生成 Hysteria 2 的正确配置文件格式。
-# - 脚本结束时自动生成清晰的配置详情和【最终正确格式】的订阅链接。
+# - 增加了对 systemd-sysv 的安装，确保在极简环境中 journalctl 命令可用。
+# - 优化了 systemd 服务配置，提高了在容器等环境中的兼容性。
+# - 使用最终正确格式的 hysteria2:// 订阅链接。
 # - 在最终诊断阶段禁用 "exit on error"，确保配置信息和链接总是能显示。
 # - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
 # ==============================================================================
@@ -58,15 +57,17 @@ main() {
     print_message "$GREEN" "旧文件清理完毕。"
 
     # 2. 安装依赖
-    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl, coreutils)..."
+    print_message "$YELLOW" "正在检查并安装依赖 (curl, jq, iproute2, openssl, coreutils, systemd)..."
     if command -v apt-get &>/dev/null; then
-        apt-get update && apt-get install -y curl jq iproute2 openssl coreutils
+        # FIX: 为 Debian/Ubuntu 添加 systemd-sysv 以确保 journalctl 可用
+        apt-get update && apt-get install -y curl jq iproute2 openssl coreutils systemd-sysv
     elif command -v yum &>/dev/null; then
-        yum install -y curl jq iproute openssl coreutils
+        # FIX: 为 CentOS/RHEL 确保 systemd 包被安装
+        yum install -y curl jq iproute openssl coreutils systemd
     elif command -v dnf &>/dev/null; then
-        dnf install -y curl jq iproute openssl coreutils
+        dnf install -y curl jq iproute openssl coreutils systemd
     else
-        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq', 'iproute2', 'openssl', 'coreutils'。"
+        print_message "$RED" "无法确定包管理器。请手动安装 'curl', 'jq', 'iproute2', 'openssl', 'coreutils' 和 'systemd'。"
         exit 1
     fi
     print_message "$GREEN" "依赖安装完毕。"
@@ -110,28 +111,11 @@ main() {
     print_message "$YELLOW" "开始配置 Hysteria 2..."
     LISTEN_PORT=35888 # 使用一个固定的端口进行测试，避免随机性问题
     OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16) # 随机生成密码
-    if [ -z "$OBFS_PASSWORD" ]; then
-        print_message "$RED" "错误: 无法生成随机密码。"
-        exit 1
-    fi
     
     mkdir -p /etc/hysteria
 
-    # --- FIX START: 使用更兼容的方式生成证书，避免 bash-specific 特性 ---
     print_message "$YELLOW" "正在使用 openssl 生成自签名证书..."
-    ECPARAM_PATH=$(mktemp)
-    if ! openssl ecparam -name prime256v1 -out "$ECPARAM_PATH"; then
-        print_message "$RED" "错误：无法创建 EC 参数文件。"
-        rm -f "$ECPARAM_PATH"
-        exit 1
-    fi
-    if ! openssl req -x509 -nodes -newkey ec:"$ECPARAM_PATH" -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650; then
-        print_message "$RED" "错误：无法生成自签名证书。"
-        rm -f "$ECPARAM_PATH"
-        exit 1
-    fi
-    rm -f "$ECPARAM_PATH"
-    # --- FIX END ---
+    openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650
     
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
@@ -153,17 +137,22 @@ EOF
 
     # 6. 设置 Systemd 服务
     print_message "$YELLOW" "正在设置 Systemd 服务..."
+    # FIX: 增加 User 和 Group 确保权限，这是在某些环境中启动失败的常见原因
     cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=Hysteria 2 Service
 After=network.target
+
 [Service]
 Type=simple
+User=root
+Group=root
 ExecStart=$HYSTERIA_BIN server -c $CONFIG_PATH
 WorkingDirectory=/etc/hysteria
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -209,7 +198,7 @@ EOF
     
     print_message "$GREEN" "所有诊断步骤已完成。"
     
-    # 生成最终正确格式的 hysteria2:// 订阅链接
+    # --- 生成最终正确格式的 hysteria2:// 订阅链接 ---
     SNI_HOST="bing.com"
     NODE_TAG="Hysteria-Node" # 定义一个默认的节点名称
     SUBSCRIPTION_LINK="hysteria2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1#${NODE_TAG}"
