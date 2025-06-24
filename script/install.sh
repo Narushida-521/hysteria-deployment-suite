@@ -1,17 +1,15 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v9 - Guaranteed Output)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v10 - Link Format Fixed)
 #
 # 特点:
 # - 已修正 Hysteria 2 的兼容性问题。
-# - 使用 openssl 生成证书，替代已被移除的 `hysteria cert` 命令。
+# - 使用 openssl 生成证书。
 # - 生成 Hysteria 2 的正确配置文件格式。
-# - 脚本结束时自动生成清晰的配置详情和订阅链接。
+# - 脚本结束时自动生成清晰的配置详情和【正确格式】的订阅链接。
 # - 在最终诊断阶段禁用 "exit on error"，确保配置信息和链接总是能显示。
 # - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
-# - 在关键步骤增加明确的输出信息。
-# - 脚本结束时自动运行诊断命令，收集所有必要信息。
 # ==============================================================================
 
 # --- 脚本设置 ---
@@ -56,7 +54,7 @@ main() {
     # 清理旧的安装 (如果存在)
     print_message "$YELLOW" "正在停止并清理任何旧的 Hysteria 服务..."
     systemctl stop hysteria >/dev/null 2>&1 || true
-    rm -f "$HYSTERIA_BIN" "$SERVICE_PATH" /etc/hysteria/config.yaml
+    rm -f "$HYSTERIA_BIN" "$SERVICE_PATH" "$CONFIG_PATH" "$CERT_PATH" "$KEY_PATH"
     print_message "$GREEN" "旧文件清理完毕。"
 
     # 2. 安装依赖
@@ -105,7 +103,7 @@ main() {
     chmod +x "$HYSTERIA_BIN"
     
     print_message "$YELLOW" "正在验证 Hysteria 版本..."
-    $HYSTERIA_BIN version
+    "$HYSTERIA_BIN" version
     print_message "$GREEN" "Hysteria 2 安装和验证成功。"
 
     # 5. 配置 Hysteria
@@ -115,11 +113,9 @@ main() {
     
     mkdir -p /etc/hysteria
 
-    # --- 使用 openssl 替代旧的 cert 命令 ---
     print_message "$YELLOW" "正在使用 openssl 生成自签名证书..."
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650
     
-    # --- 使用 Hysteria 2 的正确配置格式 ---
     print_message "$YELLOW" "正在创建配置文件..."
     cat > "$CONFIG_PATH" <<EOF
 # 监听端口
@@ -161,10 +157,10 @@ EOF
     # 7. 配置防火墙
     print_message "$YELLOW" "正在配置防火墙..."
     if command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp
+        firewall-cmd --permanent --add-port="${LISTEN_PORT}/udp"
         firewall-cmd --reload
     elif command -v ufw &>/dev/null; then
-        ufw allow ${LISTEN_PORT}/udp >/dev/null
+        ufw allow "${LISTEN_PORT}/udp" >/dev/null
     else
         print_message "$YELLOW" "未检测到 firewalld 或 ufw。"
     fi
@@ -175,7 +171,7 @@ EOF
     systemctl restart hysteria
     sleep 3 # 等待3秒让服务有时间启动或失败
     
-    # --- FIX START: 临时禁用 "exit on error" 以确保诊断和配置信息总是能显示 ---
+    # 临时禁用 "exit on error" 以确保诊断和配置信息总是能显示
     set +e
     
     print_message "$GREEN" "脚本执行完毕。下面是最终的诊断和配置信息。"
@@ -196,29 +192,15 @@ EOF
     
     print_message "$GREEN" "所有诊断步骤已完成。"
     
-    # --- 输出详细配置信息和订阅链接 ---
-    CLIENT_JSON=$(cat <<EOF
-{
-  "server": "$SERVER_IP:$LISTEN_PORT",
-  "obfs": {
-    "type": "password",
-    "password": "$OBFS_PASSWORD"
-  },
-  "tls": {
-    "insecure": true,
-    "sni": "bing.com"
-  }
-}
-EOF
-)
-    BASE64_CONFIG=$(echo "$CLIENT_JSON" | base64 -w 0)
-    SUBSCRIPTION_LINK="hy2://${BASE64_CONFIG}"
+    # --- FIX START: 生成正确格式的 hy2:// 订阅链接 ---
+    SNI_HOST="bing.com"
+    SUBSCRIPTION_LINK="hy2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1"
 
     print_message "$YELLOW" "您的 Hysteria 2 配置信息:"
     echo -e "${GREEN}服务器地址: ${NC}$SERVER_IP"
     echo -e "${GREEN}端口:       ${NC}$LISTEN_PORT"
     echo -e "${GREEN}密码:       ${NC}$OBFS_PASSWORD"
-    echo -e "${GREEN}SNI/主机名: ${NC}bing.com"
+    echo -e "${GREEN}SNI/主机名: ${NC}${SNI_HOST}"
     echo -e "${GREEN}跳过证书验证: ${NC}true"
 
     print_message "$YELLOW" "您的客户端订阅链接 (hy2://):"
