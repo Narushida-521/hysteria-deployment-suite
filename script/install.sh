@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 终极一键部署脚本 (v20 - 自定义证书和随机端口)
+# Hysteria 2 终极一键部署脚本 (v21 - URL 解析修正)
 #
 # 特点:
 # - [终极] 专为极低内存 (64MB)、无 Swap、非 Systemd (OpenVZ/LXC) 等特殊环境设计。
@@ -89,8 +89,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# FIX: 增加对 shuf 的检查，用于生成随机端口
-for cmd in curl tr head shuf; do
+# FIX: 增加对 shuf 和 awk 的检查
+for cmd in curl tr head shuf awk; do
     if ! command -v "$cmd" &>/dev/null; then
         print_message "$RED" "致命错误：核心命令 '$cmd' 不存在。您的系统过于精简，无法继续安装。"
         exit 1
@@ -119,7 +119,10 @@ ARCH=$(uname -m)
 case $ARCH in
     x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; *) print_message "$RED" "不支持的架构: $ARCH"; exit 1 ;;
 esac
-DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | grep "browser_download_url.*hysteria-linux-${ARCH}" | cut -d : -f 2,3 | tr -d \" | head -n 1)
+
+# FIX: 使用 awk 来更稳定地解析 URL，避免产生前导空格
+DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | grep "browser_download_url.*hysteria-linux-${ARCH}" | awk -F '"' '{print $4}' | head -n 1)
+
 if [ -z "$DOWNLOAD_URL" ]; then
     print_message "$RED" "无法找到最新的 Hysteria 2 下载链接。"; exit 1
 fi
@@ -133,7 +136,6 @@ print_message "$GREEN" "Hysteria 2 安装和验证成功。"
 
 # 5. 配置 Hysteria
 print_message "$YELLOW" "步骤 5: 配置 Hysteria 2..."
-# FIX: 使用 shuf 生成一个 10000-65535 之间的随机端口
 LISTEN_PORT=$(shuf -i 10000-65535 -n 1)
 OBFS_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
@@ -143,7 +145,6 @@ if command -v openssl &>/dev/null && openssl req -x509 -nodes -newkey ec:<(opens
     print_message "$GREEN" "成功使用 openssl 生成了新证书。"
 else
     print_message "$YELLOW" "本地证书生成失败！正在启动备用方案：下载您指定的预制证书..."
-    # FIX: 更新为用户指定的备用证书地址
     KEY_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.key"
     CERT_URL="https://raw.githubusercontent.com/Narushida-521/hysteria-deployment-suite/main/script/hy2.crt"
     if ! curl -Lso "$KEY_PATH" "$KEY_URL" || ! curl -Lso "$CERT_PATH" "$CERT_URL"; then
