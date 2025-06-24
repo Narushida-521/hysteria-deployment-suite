@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 (hy2) All-in-One Deployment Script (v10 - Link Format Fixed)
+# Hysteria 2 (hy2) All-in-One Deployment Script (v11 - Final Link Format Fix)
 #
 # 特点:
 # - 已修正 Hysteria 2 的兼容性问题。
 # - 使用 openssl 生成证书。
 # - 生成 Hysteria 2 的正确配置文件格式。
-# - 脚本结束时自动生成清晰的配置详情和【正确格式】的订阅链接。
+# - 脚本结束时自动生成清晰的配置详情和【最终正确格式】的订阅链接。
 # - 在最终诊断阶段禁用 "exit on error"，确保配置信息和链接总是能显示。
 # - 内置调试模式 (`set -ex`)，会打印所有执行的命令和结果。
 # ==============================================================================
@@ -192,9 +192,10 @@ EOF
     
     print_message "$GREEN" "所有诊断步骤已完成。"
     
-    # --- FIX START: 生成正确格式的 hy2:// 订阅链接 ---
+    # --- FIX START: 生成最终正确格式的 hysteria2:// 订阅链接 ---
     SNI_HOST="bing.com"
-    SUBSCRIPTION_LINK="hy2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1"
+    NODE_TAG="Hysteria-Node" # 定义一个默认的节点名称
+    SUBSCRIPTION_LINK="hysteria2://${OBFS_PASSWORD}@${SERVER_IP}:${LISTEN_PORT}?sni=${SNI_HOST}&insecure=1#${NODE_TAG}"
 
     print_message "$YELLOW" "您的 Hysteria 2 配置信息:"
     echo -e "${GREEN}服务器地址: ${NC}$SERVER_IP"
@@ -203,7 +204,7 @@ EOF
     echo -e "${GREEN}SNI/主机名: ${NC}${SNI_HOST}"
     echo -e "${GREEN}跳过证书验证: ${NC}true"
 
-    print_message "$YELLOW" "您的客户端订阅链接 (hy2://):"
+    print_message "$YELLOW" "您的客户端订阅链接 (hysteria2://):"
     echo "$SUBSCRIPTION_LINK"
     # --- FIX END ---
 }
