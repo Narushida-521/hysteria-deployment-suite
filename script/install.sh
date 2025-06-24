@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 专业部署脚本 (v27 - 重构版)
-# 作者: Gemini
-#
+# Hysteria 2 专业部署脚本
 # 特点:
+# - [修正] 修正了环境检查逻辑，不再错误地检查 'coreutils' 包名。
 # - [重构] 全新代码结构，模块化、功能化，清晰易懂。
 # - [健壮] 采用严格的错误处理机制 (set -euo pipefail) 和详细的步骤检查。
 # - [标准] 专为标准 Linux 环境 (>=512MB 内存, systemd) 设计，稳定可靠。
@@ -66,7 +65,7 @@ check_environment() {
         exit 1
     fi
 
-    # 检查所需的核心工具
+    # [修正] 检查所需的核心工具，移除对 'coreutils' 包名的检查
     local dependencies=("curl" "openssl" "gawk" "shuf" "tr" "head")
     for cmd in "${dependencies[@]}"; do
         if ! command_exists "$cmd"; then
