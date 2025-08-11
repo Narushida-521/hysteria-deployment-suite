@@ -104,8 +104,7 @@ chmod \+x deploy.sh
 第三步：执行“一键部署”命令
 现在，请在您的服务器终端上，运行我们精心打造的、最终的单行部署命令。
 请务必将 YOUR_DOCKERHUB_USERNAME 替换为您的真实用户名，并设置一个足够强的密码。
-Bash
-docker run -d --name stormgate --restart always --cap-add=NET_ADMIN -p 8443:443/udp -p 8443:443/tcp -v /root/stormgate_config:/etc/hysteria -e PASSWORD="20250624" -e MASQUERADE_URL="https://www.bing.com/" naxida/stormgate:1.0
+docker run -d --name stormgatehy -p 8443:443 naxida/stormgatehy
 ## **项目结构**
 
 hysteria-deployment-suite/  
