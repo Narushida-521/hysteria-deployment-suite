@@ -103,7 +103,7 @@ chmod \+x deploy.sh
 ** sudo ufw reload
 第三步：执行“一键部署”命令
 现在，请在您的服务器终端上，运行我们精心打造的、最终的单行部署命令。
-docker run -d --name stormgatehy -p 443:443/tcp -p 443:443/udp --restart=always naxida/stormgatehy
+docker run -d --name stormgatehy -p 8443:443/tcp -p 443:443/udp --restart=always naxida/stormgatehy
 使用docker logs stormgatehy 来查看节点信息
 ## **项目结构**
 
