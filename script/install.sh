@@ -1,13 +1,14 @@
 #!/bin/bash
 
 # ==============================================================================
-# Hysteria 2 一键安装脚本 (v12 - 移除 obfs，伪装为 www.bing.com，启用 BBR)
-# 作者: Grok, based on original by Gemini
+# Hysteria 2 一键安装脚本 (v13 - 支持自定义端口和密码)
+# 作者: Grok, based on original by Gemini & Narushida-521
 #
 # 特点:
+# - [新增] 支持在安装时自定义端口和密码。
+# - [新增] 如果不提供密码，则自动生成16位强随机密码。
 # - 移除 obfs 配置，保留 auth 和 masquerade，伪装为 https://www.bing.com。
 # - 启用 BBR 拥塞控制算法，优化网络性能。
-# - 固定端口 443，备用 8443，兼容 Hysteria 2 v2.6.2。
 # - 增强证书验证、端口检查和服务启动鲁棒性。
 # - 详细错误日志，便于调试。
 # - 支持卸载和日志查看功能。
@@ -80,8 +81,9 @@ enable_bbr() {
     fi
     sysctl -w net.core.default_qdisc=fq >/dev/null
     sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null
-    echo "net.core.default_qdisc=fq" | tee -a /etc/sysctl.conf >/dev/null
-    echo "net.ipv4.tcp_congestion_control=bbr" | tee -a /etc/sysctl.conf >/dev/null
+    # 避免重复写入
+    grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
     sysctl -p >/dev/null
     if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
         print_message "$GREEN" "BBR 已启用"
@@ -116,8 +118,8 @@ install_dependencies() {
 # 4. 清理旧安装
 cleanup_old_install() {
     print_message "$YELLOW" "步骤 4/8: 清理旧安装"
-    systemctl stop hysteria 2>/dev/null || true
-    systemctl disable hysteria 2>/dev/null || true
+    systemctl stop hysteria.service 2>/dev/null || true
+    systemctl disable hysteria.service 2>/dev/null || true
     rm -f "$HYSTERIA_BIN" "$SERVICE_PATH"
     rm -rf "$INSTALL_DIR"
     systemctl daemon-reload 2>/dev/null || true
@@ -138,7 +140,7 @@ download_hysteria() {
     print_message "$YELLOW" "下载 $url ..."
     curl -Lso "$HYSTERIA_BIN" --retry 3 --retry-delay 2 "$url" || { print_message "$RED" "错误：下载失败"; exit 1; }
     chmod +x "$HYSTERIA_BIN"
-    "$HYSTERIA_BIN" -h &>/dev/null || { print_message "$RED" "错误：二进制无效"; exit 1; }
+    "$HYSTERIA_BIN" -h &>/dev/null || { print_message "$RED" "错误：二进制文件无效"; exit 1; }
     print_message "$GREEN" "Hysteria 下载完成，版本信息："
     "$HYSTERIA_BIN" version
 }
@@ -149,27 +151,47 @@ configure_hysteria() {
     mkdir -p "$INSTALL_DIR" || { print_message "$RED" "错误：无法创建目录 $INSTALL_DIR"; exit 1; }
     chmod 755 "$INSTALL_DIR"
     [ -w "$INSTALL_DIR" ] || { print_message "$RED" "错误：目录 $INSTALL_DIR 不可写"; exit 1; }
-    local port=443
-    local password="Se7RAuFZ8Lzg"  # 使用你的示例密码
-    print_message "$YELLOW" "检查端口 $port ..."
-    if netstat -tulnp | grep -q ":${port}"; then
-        print_message "$RED" "错误：端口 $port 已占用，尝试备用端口 8443..."
-        port=8443
-        if netstat -tulnp | grep -q ":${port}"; then
-            print_message "$RED" "错误：备用端口 $port 也已占用，请手动释放端口"
-            exit 1
-        fi
+
+    # --- [修改] 交互式输入端口和密码 ---
+    local port
+    local password
+
+    # 获取端口
+    read -p "请输入您要使用的端口号 [1-65535] (默认: 443): " custom_port
+    port=${custom_port:-443}
+    # 验证端口
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        print_message "$RED" "错误：无效的端口号。请输入 1-65535 之间的数字。"
+        exit 1
     fi
+
+    # 获取密码
+    read -p "请输入您的连接密码 (留空将自动生成一个16位强密码): " custom_password
+    if [ -z "$custom_password" ]; then
+        password=$(head -c 12 /dev/urandom | base64 | tr -d '/+=')
+        print_message "$YELLOW" "已为您生成随机密码: ${password}"
+    else
+        password="$custom_password"
+    fi
+    # --- [修改结束] ---
+
+    print_message "$YELLOW" "检查端口 $port ..."
+    if netstat -tulnp | grep -q ":${port}\\>"; then
+        print_message "$RED" "错误：端口 $port 已被占用，请重新运行脚本并选择其他端口"
+        exit 1
+    fi
+
     print_message "$YELLOW" "下载证书和密钥..."
-    echo "DEBUG: 下载证书: curl -Lso $CERT_PATH $CERT_URL"
     curl -Lso "$CERT_PATH" --retry 5 --retry-delay 3 --connect-timeout 10 "$CERT_URL" || { print_message "$RED" "错误：下载证书失败，退出码: $?"; exit 1; }
-    echo "DEBUG: 下载密钥: curl -Lso $KEY_PATH $KEY_URL"
     curl -Lso "$KEY_PATH" --retry 5 --retry-delay 3 --connect-timeout 10 "$KEY_URL" || { print_message "$RED" "错误：下载密钥失败，退出码: $?"; exit 1; }
-    file_valid "$CERT_PATH" && file_valid "$KEY_PATH" || { print_message "$RED" "错误：下载文件无效，证书: $(ls -l $CERT_PATH), 密钥: $(ls -l $KEY_PATH)"; exit 1; }
+    
+    file_valid "$CERT_PATH" && file_valid "$KEY_PATH" || { print_message "$RED" "错误：下载的文件无效，请检查网络或URL。"; exit 1; }
+    
     print_message "$YELLOW" "验证证书和密钥..."
     openssl x509 -in "$CERT_PATH" -text -noout >/dev/null 2>&1 || { print_message "$RED" "错误：证书无效"; exit 1; }
     openssl rsa -in "$KEY_PATH" -check >/dev/null 2>&1 || { print_message "$RED" "错误：密钥无效"; exit 1; }
     print_message "$GREEN" "证书和密钥验证通过"
+
     print_message "$YELLOW" "生成配置文件..."
     cat > "$CONFIG_PATH" <<EOF
 listen: :${port}
@@ -188,6 +210,8 @@ masquerade:
 EOF
     chmod 644 "$CONFIG_PATH"
     file_valid "$CONFIG_PATH" || { print_message "$RED" "错误：配置文件 $CONFIG_PATH 创建失败"; exit 1; }
+
+    # 导出变量给后续函数使用
     export LISTEN_PORT="$port"
     export AUTH_PASSWORD="$password"
     print_message "$GREEN" "配置文件生成完成"
@@ -211,30 +235,35 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable --now hysteria || { print_message "$RED" "错误：服务启动失败，查看日志: journalctl -u hysteria"; exit 1; }
+    systemctl enable --now hysteria.service || { print_message "$RED" "错误：服务启动失败，请运行 'bash ${SCRIPT_NAME} logs' 查看日志"; exit 1; }
     print_message "$GREEN" "服务设置完成"
 }
 
 # 8. 总结输出
 print_summary() {
     print_message "$YELLOW" "步骤 8/8: 部署总结"
-    systemctl is-active --quiet hysteria || { print_message "$RED" "错误：服务未运行，查看日志: journalctl -u hysteria"; exit 1; }
+    sleep 2 # 等待服务稳定
+    systemctl is-active --quiet hysteria.service || { print_message "$RED" "错误：服务未运行，请运行 'bash ${SCRIPT_NAME} logs' 查看日志"; exit 1; }
+    
     local ip=$(curl -s --retry 3 --retry-delay 2 http://checkip.amazonaws.com || curl -s --retry 3 --retry-delay 2 https://api.ipify.org)
-    [ -n "$ip" ] || { print_message "$RED" "错误：无法获取服务器 IP"; exit 1; }
+    [ -n "$ip" ] || ip="<你的服务器IP>"
+    
     local sni="www.bing.com"
     local tag="Hysteria-Node"
     local link="hysteria2://${AUTH_PASSWORD}@${ip}:${LISTEN_PORT}?sni=${sni}&insecure=1#${tag}"
-    print_message "$GREEN" "部署成功！配置信息："
-    echo -e "服务器地址: ${ip}"
-    echo -e "端口: ${LISTEN_PORT}"
-    echo -e "密码: ${AUTH_PASSWORD}"
+    
+    print_message "$GREEN" "🎉 部署成功！配置信息："
+    echo -e "服务器地址: ${GREEN}${ip}${NC}"
+    echo -e "端口: ${GREEN}${LISTEN_PORT}${NC}"
+    echo -e "密码: ${GREEN}${AUTH_PASSWORD}${NC}"
     echo -e "SNI: ${sni}"
     echo -e "跳过证书验证: true"
-    echo -e "\n订阅链接: ${link}"
+    echo -e "\n${YELLOW}订阅链接:${NC}\n${link}"
+    
     print_message "$GREEN" "管理命令："
-    echo "状态: systemctl status hysteria"
-    echo "重启: systemctl restart hysteria"
-    echo "停止: systemctl stop hysteria"
+    echo "状态: systemctl status hysteria.service"
+    echo "重启: systemctl restart hysteria.service"
+    echo "停止: systemctl stop hysteria.service"
     echo "日志: bash ${SCRIPT_NAME} logs"
     echo "卸载: bash ${SCRIPT_NAME} uninstall"
 }
@@ -247,8 +276,8 @@ handle_args() {
     case "$1" in
         uninstall|del|remove)
             print_message "$YELLOW" "卸载 Hysteria 2..."
-            systemctl stop hysteria 2>/dev/null || true
-            systemctl disable hysteria 2>/dev/null || true
+            systemctl stop hysteria.service 2>/dev/null || true
+            systemctl disable hysteria.service 2>/dev/null || true
             rm -f "$SERVICE_PATH" "$HYSTERIA_BIN"
             rm -rf "$INSTALL_DIR"
             systemctl daemon-reload 2>/dev/null || true
@@ -256,8 +285,8 @@ handle_args() {
             exit 0
             ;;
         log|logs)
-            print_message "$YELLOW" "查看日志..."
-            command_exists journalctl && journalctl -u hysteria -n 50 --no-pager || print_message "$RED" "错误：未找到 journalctl"
+            print_message "$YELLOW" "查看最近50条日志..."
+            command_exists journalctl && journalctl -u hysteria.service -n 50 --no-pager || print_message "$RED" "错误：未找到 journalctl"
             exit 0
             ;;
         *)
